@@ -9,9 +9,32 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { PATHS, CODES, gbErr } from '../protocol.mjs';
 import { createJournal } from './journal.mjs';
+import { createConsoleBuffer, createNetworkTracker } from './buffers.mjs';
 
 const NAME_RE = /^[\w.-]{1,64}$/;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const DIALOG_TTL_MS = 30 * 1000; // auto-dismiss a stashed dialog so it never wedges a session forever
+
+// Native dialogs are STASHED, not auto-answered: surface them in every response and let the
+// caller respond via the dialog action. A 30s watchdog dismisses an ignored one (journaled).
+function onDialog(rec, d) {
+  rec._dialog = d;
+  rec.pendingDialog = { type: d.type(), message: d.message(), defaultValue: d.defaultValue?.() ?? '' };
+  rec.journal.log('dialog', { type: rec.pendingDialog.type, message: rec.pendingDialog.message });
+  const waiters = rec._dialogWaiters;
+  rec._dialogWaiters = [];
+  for (const w of waiters) w();
+  rec._dialogTimer = setTimeout(async () => {
+    if (!rec.pendingDialog) return;
+    try { await d.dismiss(); } catch { /* already gone */ }
+    rec.journal.log('dialog-autodismiss', { after: DIALOG_TTL_MS });
+    rec.pendingDialog = null;
+    rec._dialog = null;
+    if (rec._inflight) { rec._inflight.catch(() => {}); rec._inflight = null; }
+  }, DIALOG_TTL_MS);
+  rec._dialogTimer.unref?.();
+}
 
 export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
   /** name -> session record */
@@ -103,6 +126,23 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       rec.context = await browser.newContext(ctxOpts);
       rec.page = await rec.context.newPage();
       rec.cdp = await rec.context.newCDPSession(rec.page);
+      // M2 per-tab defaults: bypass the service worker + disable cache so a stale build never
+      // reports as fresh (research 07). Network.enable also feeds settle's in-flight tracker.
+      await rec.cdp.send('Network.enable').catch(() => {});
+      await rec.cdp.send('Network.setBypassServiceWorker', { bypass: true }).catch(() => {});
+      await rec.cdp.send('Network.setCacheDisabled', { cacheDisabled: true }).catch(() => {});
+      rec.net = createNetworkTracker(rec.cdp);
+      rec.console = createConsoleBuffer(rec.page);
+      rec.observe = { version: 0, navSeq: 0, navSeqAt: 0, registry: new Map() };
+      rec.pendingDialog = null;
+      rec._dialog = null;
+      rec._inflight = null;
+      rec._dialogWaiters = [];
+      rec._dialogTimer = null;
+      rec.page.on('framenavigated', (f) => {
+        try { if (f === rec.page.mainFrame()) rec.observe.navSeq += 1; } catch { /* torn down */ }
+      });
+      rec.page.on('dialog', (d) => onDialog(rec, d));
       rec.journal = createJournal(PATHS.sessions, name);
       rec.journal.log('create', {
         headed: rec.headed,
@@ -159,6 +199,7 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
   async function destroy(name) {
     const s = get(name);
     sessions.delete(name);
+    clearTimeout(s._dialogTimer); // don't let a stashed-dialog watchdog fire on a closed context
     s.journal.log('destroy', {});
     try {
       await s.context.close(); // closes the context; artifacts on disk are kept
@@ -219,5 +260,8 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
     shutdown,
     count: () => sessions.size,
     browserLaunched: () => !!(persistent.headless || persistent.headed),
+    // Exposed for the M2 action layer (actions.mjs): the session record + the serial queue.
+    _get: get,
+    runQueued,
   };
 }

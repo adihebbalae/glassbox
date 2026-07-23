@@ -10,6 +10,7 @@ import {
   PATHS, VERSION, HOST, CODES, HTTP_STATUS, pingDaemon, probeDaemon,
 } from '../protocol.mjs';
 import { createSessionManager } from './sessions.mjs';
+import { handleAction } from './actions.mjs';
 import { sweepOrphans } from './prockit.mjs';
 
 const TOKEN = crypto.randomBytes(32).toString('hex');
@@ -82,6 +83,13 @@ async function handle(req, res, mgr) {
     }
     if (method === 'GET' && p === '/sessions') {
       return send(res, 200, { sessions: mgr.list() });
+    }
+    // M2 action verbs: POST /sessions/:name/<verb> (observe, goto, click, type, dialog, …).
+    // /probe stays with the M1 handler below (excluded here).
+    const mv = /^\/sessions\/([^/]+)\/([a-z]+)$/.exec(p);
+    if (mv && method === 'POST' && mv[2] !== 'probe') {
+      const body = await readJson(req);
+      return send(res, 200, await handleAction(mgr, decodeURIComponent(mv[1]), mv[2], body));
     }
     const m = /^\/sessions\/([^/]+)(\/probe)?$/.exec(p);
     if (m) {

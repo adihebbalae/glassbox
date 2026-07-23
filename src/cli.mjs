@@ -144,7 +144,83 @@ async function killAll() {
   );
 }
 
+// ---- M2 act/observe verbs -------------------------------------------------
+
+// Resolve a target from flags (ref > testid > role[+name] > selector > text). For click/hover/
+// dblclick a bare positional is treated as a CSS selector (selector-first grounding).
+function buildTarget(verb, pos, opts) {
+  if (opts.ref) return { ref: opts.ref };
+  if (opts.testid) return { testid: opts.testid };
+  if (opts.role) return { role: opts.role, ...(opts.name ? { name: opts.name } : {}) };
+  if (opts.selector) return { selector: opts.selector };
+  if (opts.text && !['type', 'press'].includes(verb)) return { text: opts.text };
+  if (['click', 'dblclick', 'hover'].includes(verb) && pos[1]) return { selector: pos[1] };
+  return {};
+}
+
+function buildBody(verb, pos, opts) {
+  const t = buildTarget(verb, pos, opts);
+  const timeout = opts.timeoutMs ? { timeoutMs: Number(opts.timeoutMs) } : {};
+  switch (verb) {
+    case 'goto': return { url: pos[1] || opts.url, ...timeout };
+    case 'observe': return { ...(opts.selector ? { selector: opts.selector } : {}), ...(opts.limit ? { limit: Number(opts.limit) } : {}), ...(opts.cursor ? { cursor: Number(opts.cursor) } : {}) };
+    case 'type': return { ...t, text: pos[1] ?? opts.text ?? '', submit: !!opts.submit, ...timeout };
+    case 'press': return { key: pos[1] || opts.key, ...(t.selector || t.ref || t.testid || t.role ? t : {}), ...timeout };
+    case 'scroll': {
+      const to = opts.to;
+      if (to && /^e\d+$/.test(to)) return { ref: to, ...timeout };
+      return { ...(to ? { to } : {}), ...(opts.by ? { by: Number(opts.by) } : {}), ...timeout };
+    }
+    case 'dialog': return { action: pos[1] || opts.action || 'dismiss', ...(opts.text ? { text: opts.text } : {}) };
+    case 'drag': return { from: { selector: opts.from }, to: { selector: opts.to }, ...timeout };
+    case 'upload': return { ...t, files: (opts.files || '').split(',').filter(Boolean), ...timeout };
+    case 'select': return { ...t, values: (opts.values || '').split(',').filter(Boolean), ...timeout };
+    default: return { ...t, ...timeout }; // click, dblclick, hover
+  }
+}
+
+function printResult(verb, r) {
+  if (JSON_MODE) return out(r);
+  if (verb === 'observe') {
+    console.log(r.text || '(empty)');
+    if (r.nextCursor != null) console.log(`\n… ${r.count} nodes total — next page: --cursor ${r.nextCursor}`);
+    console.log(`\n[v${r.version} · ${r.count} nodes · ax ${r.axPath}]`);
+    return;
+  }
+  if (verb === 'dialog') {
+    console.log(`dialog ${r.action} — ${r.dialog.type} ${JSON.stringify(r.dialog.message)}; ${r.settled ? 'settled' : 'UNSETTLED'} at ${r.url}`);
+    return;
+  }
+  const bits = [r.settled ? 'settled' : `UNSETTLED(${(r.settleWhy || []).join(',')})`, `${r.mutations} mut`];
+  if (r.urlChanged) bits.push(`url→ ${r.url}`);
+  if (r.console?.length) bits.push(`${r.console.length} console`);
+  if (r.dialog) bits.push(`DIALOG ${r.dialog.type}: ${JSON.stringify(r.dialog.message)}`);
+  bits.push(`${r.tookMs}ms`);
+  console.log(`${verb} ok — ${bits.join(', ')}`);
+}
+
+async function runVerb(verb, pos, opts) {
+  const session = opts.session || process.env.GLASSBOX_SESSION;
+  if (!session) fail({ code: 'BAD_REQUEST', message: 'session required', correction_hint: 'pass -s <session> or set GLASSBOX_SESSION' });
+  const d = await ensureDaemon();
+  const body = buildBody(verb, pos, opts);
+  const { status, body: resp } = await daemonReq(d, 'POST', `/sessions/${encodeURIComponent(session)}/${verb}`, body);
+  if (status !== 200) return fail(resp.error);
+  printResult(verb, resp);
+}
+
+const VERBS = new Set(['goto', 'click', 'dblclick', 'hover', 'type', 'press', 'scroll', 'observe', 'dialog', 'drag', 'upload', 'select']);
+
 // ---- arg parsing ----------------------------------------------------------
+
+// Flags that consume the next token as their value (kebab on the wire → camel in opts).
+const VALUE_FLAGS = {
+  '-s': 'session', '--session': 'session', '--color': 'colorScheme', '--base-url': 'baseUrl',
+  '--selector': 'selector', '--ref': 'ref', '--testid': 'testid', '--role': 'role', '--name': 'name',
+  '--text': 'text', '--url': 'url', '--to': 'to', '--by': 'by', '--key': 'key', '--from': 'from',
+  '--files': 'files', '--values': 'values', '--limit': 'limit', '--cursor': 'cursor',
+  '--action': 'action', '--timeout': 'timeoutMs',
+};
 
 function parseArgs(argv) {
   const pos = [];
@@ -153,12 +229,12 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--json') JSON_MODE = true;
     else if (a === '--headed') opts.headed = true;
+    else if (a === '--submit') opts.submit = true;
     else if (a === '--viewport') {
       const m = /^(\d+)x(\d+)$/.exec(argv[++i] || '');
       if (!m) fail({ code: 'BAD_REQUEST', message: 'bad --viewport, expected WxH e.g. 1280x800' });
       opts.viewport = { width: Number(m[1]), height: Number(m[2]) };
-    } else if (a === '--color') opts.colorScheme = argv[++i];
-    else if (a === '--base-url') opts.baseUrl = argv[++i];
+    } else if (VALUE_FLAGS[a]) opts[VALUE_FLAGS[a]] = argv[++i];
     else pos.push(a);
   }
   return { pos, opts };
@@ -171,6 +247,15 @@ const HELP = `glassbox <command>
   session ls
   session rm <name>
   kill-all
+
+  act/observe (all take -s <session> or GLASSBOX_SESSION):
+    goto <url>
+    observe [--selector CSS] [--limit N] [--cursor N]
+    click|dblclick|hover <css> | --ref eN | --testid ID | --role R [--name N] | --selector CSS | --text T
+    type <text> --selector CSS [--submit]        press <key> [--selector CSS]
+    scroll [--to top|bottom|CSS|eN] [--by PX]     dialog accept|dismiss [--text T]
+    drag --from CSS --to CSS    upload --selector CSS --files a,b    select --selector CSS --values x,y
+
   [--json] on any command for machine-readable output`;
 
 async function main() {
@@ -184,6 +269,7 @@ async function main() {
     if (verb === 'session' && (sub === 'ls' || sub === 'list')) return await sessionLs();
     if (verb === 'session' && (sub === 'rm' || sub === 'close')) return await sessionRm(arg);
     if (verb === 'kill-all') return await killAll();
+    if (VERBS.has(verb)) return await runVerb(verb, pos, opts);
     console.log(HELP);
     process.exitCode = verb ? 1 : 0;
   } catch (e) {

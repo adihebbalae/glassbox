@@ -25,6 +25,12 @@ export const CODES = Object.freeze({
   BAD_TOKEN: 'BAD_TOKEN',
   BAD_REQUEST: 'BAD_REQUEST',
   INTERNAL: 'INTERNAL',
+  // M2 — act + observe
+  STALE_REF: 'STALE_REF', // a ref outlived its snapshot; re-observe
+  NO_TARGET: 'NO_TARGET', // selector/testid/role/text/ref matched nothing
+  ACT_TIMEOUT: 'ACT_TIMEOUT', // Playwright actionability check unmet within the per-action budget
+  DIALOG_PENDING: 'DIALOG_PENDING', // a native dialog must be answered before other actions proceed
+  NO_DIALOG: 'NO_DIALOG', // dialog responder called with nothing pending
 });
 
 export const HTTP_STATUS = Object.freeze({
@@ -34,6 +40,11 @@ export const HTTP_STATUS = Object.freeze({
   BAD_TOKEN: 401,
   BAD_REQUEST: 400,
   INTERNAL: 500,
+  STALE_REF: 409,
+  NO_TARGET: 404,
+  ACT_TIMEOUT: 504,
+  DIALOG_PENDING: 409,
+  NO_DIALOG: 409,
 });
 
 /**
