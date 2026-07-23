@@ -1,0 +1,189 @@
+RootWebArea "West Campus Integrity Index"
+link "Skip to content"
+banner
+main
+contentinfo
+link "West Campus Integrity Index PUBLIC RECORDS OF WEST CAMPUS HOUSING · UPDATED 2026-07-22"
+navigation "Site sections"
+paragraph
+paragraph
+paragraph
+paragraph
+paragraph
+paragraph
+link "Buildings"
+link "Operators"
+link "Methodology"
+link "Data"
+link "Why"
+link "About"
+button "Switch to light theme"
+heading "Look up your West Campus building."
+paragraph
+paragraph
+button "SKIP ×"
+list
+heading "The gap a star rating hides"
+paragraph
+figure
+heading "Browse all 26 buildings"
+paragraph
+table
+paragraph
+strong
+link "Corrections are posted with our response →"
+link "DISCLAIMER"
+link "PRIVACY"
+link "TERMS OF USE"
+textbox "Search buildings"
+listitem
+listitem
+listitem
+paragraph
+Figcaption
+rowgroup
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+row
+link "15 verified operators · 1 with settlements or federal litigation on public file →"
+paragraph
+paragraph
+paragraph
+paragraph
+link "SEE HOW THE PATTERN WORKS →"
+row
+cell "Rise at West Campus Article Student Living toured 5.0★ · lived 1.6★"
+cell "112"
+cell "[OPAQUE]"
+cell "Rise at West Campus — case file"
+cell "Yugo Austin Waterloo Yugo (USA) LLC"
+cell "55"
+cell "[OPAQUE]"
+cell "Yugo Austin Waterloo — case file"
+cell "Union on San Antonio Greystar"
+cell "28"
+cell "[OPAQUE]"
+cell "Union on San Antonio — case file"
+cell "The Mark Landmark Properties"
+cell "25"
+cell "[ARCHIVED]"
+cell "The Mark — case file"
+cell "Rambler ATX LV Collective"
+cell "21"
+cell "[ARCHIVED]"
+cell "Rambler ATX — case file"
+cell "The Castilian American Campus Communities"
+cell "16"
+cell "[OPAQUE]"
+cell "The Castilian — case file"
+cell "Moontower Landmark Properties"
+cell "12"
+cell "[ARCHIVED]"
+cell "Moontower — case file"
+cell "The Block (American Campus) American Campus Communities"
+cell "11"
+cell "[OPAQUE]"
+cell "The Block (American Campus) — case file"
+cell "The Standard Landmark Properties"
+cell "11"
+cell "[ARCHIVED]"
+cell "The Standard — case file"
+cell "The Nine at Rio Landmark Properties toured 4.8★ · lived 3.6★"
+cell "7"
+cell "[OPAQUE]"
+cell "The Nine at Rio — case file"
+cell "Villas on Nueces Villas Student Housing (Zucker Properties)"
+cell "5"
+cell "[OPAQUE]"
+cell "Villas on Nueces — case file"
+cell "Villas on Rio PeakMade Real Estate"
+cell "5"
+cell "[ARCHIVED]"
+cell "Villas on Rio — case file"
+cell "Torre GMH Communities"
+cell "4"
+cell "[ARCHIVED]"
+cell "Torre — case file"
+cell "Yugo Austin Nueces Yugo (USA) LLC"
+cell "4"
+cell "[OPAQUE]"
+cell "Yugo Austin Nueces — case file"
+cell "The Nine at West Campus Landmark Properties"
+cell "4"
+cell "[ARCHIVED]"
+cell "The Nine at West Campus — case file"
+cell "26 West American Campus Communities"
+cell "4"
+cell "[OPAQUE]"
+cell "26 West — case file"
+cell "Regents West at 26th CWS Apartment Homes"
+cell "4"
+cell "[ARCHIVED]"
+cell "Regents West at 26th — case file"
+cell "Union on 24th Greystar"
+cell "3"
+cell "[OPAQUE]"
+cell "Union on 24th — case file"
+cell "Lark Austin The Scion Group"
+cell "3"
+cell "[OPAQUE]"
+cell "Lark Austin — case file"
+cell "21 Pearl The Preiss Company"
+cell "3"
+cell "[ARCHIVED]"
+cell "21 Pearl — case file"
+cell "Regents West at 24th CWS Apartment Homes"
+cell "2"
+cell "[OPAQUE]"
+cell "Regents West at 24th — case file"
+cell "2400 Nueces UT Austin University Housing and Dining"
+cell "1"
+cell "[ARCHIVED]"
+cell "2400 Nueces — case file"
+cell "Dobie Twenty21 UT Austin University Housing and Dining"
+cell "1"
+cell "[ARCHIVED]"
+cell "Dobie Twenty21 — case file"
+cell "Inspire on 22nd Redstone Residential"
+cell "0"
+cell "[ARCHIVED]"
+cell "Inspire on 22nd — case file"
+cell "Signature 1909 The Preiss Company"
+cell "0"
+cell "[ARCHIVED]"
+cell "Signature 1909 — case file"
+cell "Ion Austin The Scion Group"
+cell "0"
+cell "[OPAQUE]"
+cell "Ion Austin — case file"
+columnheader "BUILDING"
+columnheader "COMPLAINT RECORDS"
+columnheader "PRICE"
+columnheader "OPEN"
+link "Rise at West Campus"
+paragraph
+link "Rise at West Campus — case file"
+l
