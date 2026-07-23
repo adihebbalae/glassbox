@@ -36,12 +36,33 @@ function onDialog(rec, d) {
   rec._dialogTimer.unref?.();
 }
 
+// Chromium drops a DevToolsActivePort file in the --user-data-dir when launched with a
+// --remote-debugging-port: line 1 is the actual port, line 2 the browser ws path. We parse it to
+// expose a real CDP endpoint for the M6 "paste into DevTools" link (Playwright drives via its own
+// pipe; a second TCP port coexists — multi-client CDP, research 02 §14). Best-effort: absent file
+// → no DevTools link, screencast (which needs no debug port) still works.
+async function readCdpEndpoint(udd) {
+  const file = path.join(udd, 'DevToolsActivePort');
+  for (let i = 0; i < 20; i++) {
+    try {
+      const raw = fs.readFileSync(file, 'utf8');
+      const nl = raw.indexOf('\n');
+      const port = Number((nl < 0 ? raw : raw.slice(0, nl)).trim());
+      const wsPath = nl < 0 ? '' : raw.slice(nl + 1).trim();
+      if (port) return { port, browserWs: `ws://127.0.0.1:${port}${wsPath}` };
+    } catch { /* not written yet */ }
+    await delay(50);
+  }
+  return null;
+}
+
 export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
   /** name -> session record */
   const sessions = new Map();
   // Persistent contexts keyed by mode; each .browser() is the shared handle we spawn sessions on.
   const persistent = { headless: null, headed: null };
   const launching = { headless: null, headed: null };
+  const cdpEndpoint = { headless: null, headed: null }; // {port, browserWs} per mode, or null
 
   async function ensureBrowser(headed) {
     const key = headed ? 'headed' : 'headless';
@@ -50,10 +71,11 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       const udd = path.join(PATHS.chromeData, key);
       fs.mkdirSync(udd, { recursive: true });
       launching[key] = chromium
-        .launchPersistentContext(udd, { channel: 'chromium', headless: !headed })
-        .then((ctx) => {
+        .launchPersistentContext(udd, { channel: 'chromium', headless: !headed, args: ['--remote-debugging-port=0'] })
+        .then(async (ctx) => {
           persistent[key] = ctx;
           for (const p of ctx.pages()) p.close().catch(() => {}); // drop the default about:blank tab
+          cdpEndpoint[key] = await readCdpEndpoint(udd); // best-effort; null if the file never appears
           return ctx;
         })
         .catch((err) => {
@@ -62,6 +84,18 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
         });
     }
     return (await launching[key]).browser();
+  }
+
+  /** The CDP block for a session's info: browser ws + this page's target ws + a DevTools link, or null. */
+  function cdpBlock(s) {
+    const ep = cdpEndpoint[s.headed ? 'headed' : 'headless'];
+    if (!ep || !s.targetId) return null;
+    const targetWs = `ws://127.0.0.1:${ep.port}/devtools/page/${s.targetId}`;
+    return {
+      browserWs: ep.browserWs,
+      targetWs,
+      devtoolsFrontend: `devtools://devtools/bundled/inspector.html?ws=127.0.0.1:${ep.port}/devtools/page/${s.targetId}`,
+    };
   }
 
   function get(name) {
@@ -126,6 +160,10 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       rec.context = await browser.newContext(ctxOpts);
       rec.page = await rec.context.newPage();
       rec.cdp = await rec.context.newCDPSession(rec.page);
+      // The page target's id is stable for the tab's life (survives navigations) — cache it so the
+      // watch/DevTools URLs in info() stay synchronous. Non-fatal if unavailable.
+      try { rec.targetId = (await rec.cdp.send('Target.getTargetInfo')).targetInfo?.targetId || null; }
+      catch { rec.targetId = null; }
       // M2 per-tab defaults: bypass the service worker + disable cache so a stale build never
       // reports as fresh (research 07). Network.enable also feeds settle's in-flight tracker.
       await rec.cdp.send('Network.enable').catch(() => {});
@@ -178,7 +216,13 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       url: s.page.url(),
       headed: s.headed,
       idleMs: Date.now() - s.lastTouch,
+      cdp: cdpBlock(s), // browser/target ws + DevTools link (null if no debug port)
     };
+  }
+
+  /** Just the CDP endpoint block for a session (used by the watch page's DevTools link). */
+  function cdpInfo(name) {
+    return cdpBlock(get(name));
   }
 
   function list() {
@@ -267,6 +311,7 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
     create,
     list,
     info,
+    cdpInfo,
     destroy,
     probe,
     gcTick,

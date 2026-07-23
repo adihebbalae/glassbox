@@ -144,6 +144,29 @@ async function killAll() {
   );
 }
 
+// ---- M6 ride-along watch --------------------------------------------------
+
+// Open a URL in the OS default browser (win32: `cmd /c start`); the empty first arg is `start`'s
+// window-title slot. Non-fatal — printing the URL is always the real deliverable.
+function openBrowser(url) {
+  try {
+    if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    else if (process.platform === 'darwin') spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+  } catch { /* the printed URL is enough */ }
+}
+
+async function watch(name) {
+  const d = await ensureDaemon();
+  const base = `http://127.0.0.1:${d.port}`;
+  const url = name
+    ? `${base}/watch/${encodeURIComponent(name)}?token=${d.token}`
+    : `${base}/?token=${d.token}`;
+  if (!process.env.GLASSBOX_NO_OPEN) openBrowser(url); // tests set this to avoid popping a real tab
+
+  out({ url, session: name || null }, name ? `watching '${name}' → ${url}` : `session grid → ${url}`);
+}
+
 // ---- M2 act/observe verbs -------------------------------------------------
 
 // Resolve a target from flags (ref > testid > role[+name] > selector > text). For click/hover/
@@ -393,6 +416,7 @@ const HELP = `glassbox <command>
   session open <name> [--headed] [--viewport WxH] [--color light|dark] [--theme-attr ATTR] [--base-url URL]
   session ls
   session rm <name>
+  watch [session]        (opens a live screencast + takeover page; no arg = session grid)
   kill-all
 
   act/observe (all take -s <session> or GLASSBOX_SESSION):
@@ -428,6 +452,7 @@ async function main() {
     if (verb === 'session' && (sub === 'ls' || sub === 'list')) return await sessionLs();
     if (verb === 'session' && (sub === 'rm' || sub === 'close')) return await sessionRm(arg);
     if (verb === 'kill-all') return await killAll();
+    if (verb === 'watch') return await watch(sub);
     if (verb === 'debug') return await runDebug(pos, opts);
     if (verb === 'style') return await runStyle(pos, opts);
     if (VERBS.has(verb)) return await runVerb(verb, pos, opts);

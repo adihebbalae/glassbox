@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — watch</title>
+<style>
+  html, body { margin: 0; font-family: sans-serif; }
+  /* Tall body so a scripted scroll produces real repaints → screencast frames. */
+  body { height: 3000px; background: #eef; }
+  /* #hit is position:fixed at a KNOWN viewport rect, so the M6 proof can click it in frame-space
+     CSS px without needing a getBoundingClientRect query (no generic eval verb exists pre-M5). */
+  #hit { position: fixed; left: 20px; top: 20px; width: 280px; height: 120px;
+         background: #3355aa; color: #fff; border: 0; font-size: 20px; }
+  /* #result is a BUTTON (interactive → always visible to observe) whose text the click mutates. */
+  #result { position: fixed; left: 20px; top: 160px; min-width: 280px; min-height: 44px; }
+  .filler { margin-top: 260px; padding: 12px; }
+</style>
+</head>
+<body>
+<button id="hit" type="button">CLICK ME</button>
+<button id="result" type="button">idle</button>
+<div class="filler">scroll region — a tall body makes scrolling generate screencast frames.</div>
+<script src="/watch.js"></script>
+</body>
+</html>

@@ -13,6 +13,8 @@ import { createSessionManager } from './sessions.mjs';
 import { handleAction } from './actions.mjs';
 import { handleDebug } from './debug.mjs';
 import { handleStyle } from './style.mjs';
+import { handleWatchUpgrade } from './screencast.mjs';
+import { gridPage, watchPage } from './watch-page.mjs';
 import { sweepOrphans } from './prockit.mjs';
 
 const TOKEN = crypto.randomBytes(32).toString('hex');
@@ -27,17 +29,28 @@ function send(res, status, obj) {
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(body);
 }
+function sendHtml(res, html) {
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(html);
+}
 function sendErr(res, code, message, extra = {}) {
   const { code: _c, message: _m, ...rest } = extra;
   send(res, HTTP_STATUS[code] || 500, { error: { code, message, ...rest } });
 }
 
-function authed(req) {
-  const m = /^Bearer (.+)$/.exec(req.headers['authorization'] || '');
-  if (!m) return false;
-  const got = Buffer.from(m[1]);
+function tokenOk(tok) {
+  if (!tok) return false;
+  const got = Buffer.from(tok);
   const want = Buffer.from(TOKEN);
   return got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+
+// Accept the bearer header (CLI/MCP/tests) OR a ?token= query param — browsers navigating to the
+// watch page and opening the screencast WS can't set an Authorization header.
+function authed(req, url) {
+  const m = /^Bearer (.+)$/.exec(req.headers['authorization'] || '');
+  if (m && tokenOk(m[1])) return true;
+  return tokenOk(url?.searchParams.get('token'));
 }
 
 function readJson(req) {
@@ -60,11 +73,21 @@ function readJson(req) {
 }
 
 async function handle(req, res, mgr) {
-  if (!authed(req)) return sendErr(res, CODES.BAD_TOKEN, 'missing or invalid bearer token');
   const url = new URL(req.url, `http://${HOST}`);
+  if (!authed(req, url)) return sendErr(res, CODES.BAD_TOKEN, 'missing or invalid bearer token');
   const p = url.pathname;
   const method = req.method;
+  const token = url.searchParams.get('token') || TOKEN; // for self-referential links in served HTML
   try {
+    // Ride-along pages (M6): the session grid and the per-session live watcher (auth via ?token=).
+    if (method === 'GET' && p === '/') return sendHtml(res, gridPage({ token, sessions: mgr.list() }));
+    const wm = /^\/watch\/([^/]+)$/.exec(p);
+    if (wm && method === 'GET') {
+      const name = decodeURIComponent(wm[1]);
+      let cdp = null;
+      try { cdp = mgr.cdpInfo(name); } catch { /* unknown session — still render the shell */ }
+      return sendHtml(res, watchPage({ session: name, token, cdp }));
+    }
     if (method === 'GET' && p === '/ping') {
       return send(res, 200, {
         pong: true, pid: process.pid, version: VERSION, startTime: START,
@@ -153,6 +176,16 @@ async function main() {
   const mgr = createSessionManager({ idleTtlMs: IDLE_TTL });
   const server = http.createServer((req, res) => handle(req, res, mgr));
   server.on('clientError', (_e, sock) => sock.destroy());
+  // WebSocket upgrades: only /watch/:session, authed via ?token= (browsers can't set headers).
+  server.on('upgrade', (req, socket, head) => {
+    try {
+      const url = new URL(req.url, `http://${HOST}`);
+      if (!authed(req, url)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+      const wm = /^\/watch\/([^/]+)$/.exec(url.pathname);
+      if (!wm) { socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); socket.destroy(); return; }
+      handleWatchUpgrade(mgr, decodeURIComponent(wm[1]), req, socket, head);
+    } catch { try { socket.destroy(); } catch { /* gone */ } }
+  });
   await new Promise((r) => server.listen(0, HOST, r));
   const { port } = server.address();
 
