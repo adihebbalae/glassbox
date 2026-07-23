@@ -31,6 +31,8 @@ export const CODES = Object.freeze({
   ACT_TIMEOUT: 'ACT_TIMEOUT', // Playwright actionability check unmet within the per-action budget
   DIALOG_PENDING: 'DIALOG_PENDING', // a native dialog must be answered before other actions proceed
   NO_DIALOG: 'NO_DIALOG', // dialog responder called with nothing pending
+  // M3 — verification engine
+  BAD_CHANNEL: 'BAD_CHANNEL', // read() got a channel that isn't console|network|errors|overlay
 });
 
 export const HTTP_STATUS = Object.freeze({
@@ -45,6 +47,7 @@ export const HTTP_STATUS = Object.freeze({
   ACT_TIMEOUT: 504,
   DIALOG_PENDING: 409,
   NO_DIALOG: 409,
+  BAD_CHANNEL: 400,
 });
 
 /**

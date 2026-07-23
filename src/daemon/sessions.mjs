@@ -134,13 +134,27 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       rec.net = createNetworkTracker(rec.cdp);
       rec.console = createConsoleBuffer(rec.page);
       rec.observe = { version: 0, navSeq: 0, navSeqAt: 0, registry: new Map() };
+      // M3 theme-sweep plumbing: colorScheme rode into newContext above; themeAttr (e.g.
+      // 'data-theme') is the site's own theme mechanism verify drives alongside emulateMedia.
+      rec.colorScheme = opts.colorScheme || null;
+      rec.themeAttr = opts.themeAttr || null;
+      // Nav markers scope verify's error/network report to the CURRENT page load (a prior page's
+      // console errors and 4xx must not leak into this page's report).
+      rec._navMark = 0;
+      rec._navTs = 0;
       rec.pendingDialog = null;
       rec._dialog = null;
       rec._inflight = null;
       rec._dialogWaiters = [];
       rec._dialogTimer = null;
       rec.page.on('framenavigated', (f) => {
-        try { if (f === rec.page.mainFrame()) rec.observe.navSeq += 1; } catch { /* torn down */ }
+        try {
+          if (f === rec.page.mainFrame()) {
+            rec.observe.navSeq += 1;
+            rec._navMark = rec.console.mark();
+            rec._navTs = Date.now();
+          }
+        } catch { /* torn down */ }
       });
       rec.page.on('dialog', (d) => onDialog(rec, d));
       rec.journal = createJournal(PATHS.sessions, name);

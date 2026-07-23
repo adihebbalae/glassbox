@@ -172,6 +172,18 @@ function buildBody(verb, pos, opts) {
       return { ...(to ? { to } : {}), ...(opts.by ? { by: Number(opts.by) } : {}), ...timeout };
     }
     case 'dialog': return { action: pos[1] || opts.action || 'dismiss', ...(opts.text ? { text: opts.text } : {}) };
+    case 'verify': return {
+      ...(opts.scope ? { scope: opts.scope } : {}),
+      ...(opts.themes ? { themes: true } : {}),
+      ...(opts.viewports ? { viewports: true } : {}),
+      ...(opts.noAxe ? { axe: false } : {}),
+      ...(opts.noShots ? { screenshots: false } : {}),
+    };
+    case 'read': return {
+      channel: pos[1] || opts.channel || 'errors',
+      ...(opts.since ? { since: Number(opts.since) } : {}),
+      ...(opts.limit ? { limit: Number(opts.limit) } : {}),
+    };
     case 'drag': return { from: { selector: opts.from }, to: { selector: opts.to }, ...timeout };
     case 'upload': return { ...t, files: (opts.files || '').split(',').filter(Boolean), ...timeout };
     case 'select': return { ...t, values: (opts.values || '').split(',').filter(Boolean), ...timeout };
@@ -191,6 +203,32 @@ function printResult(verb, r) {
     console.log(`dialog ${r.action} — ${r.dialog.type} ${JSON.stringify(r.dialog.message)}; ${r.settled ? 'settled' : 'UNSETTLED'} at ${r.url}`);
     return;
   }
+  if (verb === 'verify') {
+    const c = r.counts || {};
+    console.log(`verify ${r.ok ? 'OK' : 'ISSUES'} — ${r.settled ? 'settled' : 'UNSETTLED'} at ${r.url}`);
+    console.log(`  counts: console=${c.consoleErrors} pageerr=${c.pageErrors} net(failed=${c.netFailed} http=${c.netHttpError} hang=${c.netHanging} mixed=${c.netMixed}) a11y=${c.a11y} layout=${c.layout}`);
+    for (const f of r.findings || []) console.log(`  [${f.severity}/${f.channel}] ${f.summary}`);
+    const a = r.artifacts || {};
+    console.log(`  report: ${a.report}`);
+    if (a.screenshots?.length) console.log(`  shots: ${a.screenshots.join(', ')}`);
+    console.log(`  ${r.tookMs}ms`);
+    return;
+  }
+  if (verb === 'read') {
+    if (r.channel === 'overlay') { console.log(r.overlay ? `overlay [${r.overlay.framework}] ${r.overlay.message}` : 'no error overlay'); return; }
+    if (r.channel === 'network') {
+      const c = r.counts;
+      console.log(`network — failed=${c.failed} httpError=${c.httpError} hanging=${c.hanging} mixed=${c.mixedContent}`);
+      for (const x of r.network.failed) console.log(`  FAIL ${x.method || 'GET'} ${x.url} → ${x.errorText}`);
+      for (const x of r.network.httpError) console.log(`  HTTP ${x.status} ${x.method || 'GET'} ${x.url}`);
+      for (const x of r.network.hanging) console.log(`  HANG ${x.method || 'GET'} ${x.url}`);
+      return;
+    }
+    for (const e of r.entries || []) console.log(`  ${e.kind}: ${e.text}${e.orig ? `  (${e.orig.file}:${e.orig.line})` : e.loc ? `  (${e.loc})` : ''}`);
+    if (r.nextCursor != null) console.log(`… more — next: --since ${r.nextCursor}`);
+    if (!r.entries?.length) console.log('(none)');
+    return;
+  }
   const bits = [r.settled ? 'settled' : `UNSETTLED(${(r.settleWhy || []).join(',')})`, `${r.mutations} mut`];
   if (r.urlChanged) bits.push(`url→ ${r.url}`);
   if (r.console?.length) bits.push(`${r.console.length} console`);
@@ -204,12 +242,15 @@ async function runVerb(verb, pos, opts) {
   if (!session) fail({ code: 'BAD_REQUEST', message: 'session required', correction_hint: 'pass -s <session> or set GLASSBOX_SESSION' });
   const d = await ensureDaemon();
   const body = buildBody(verb, pos, opts);
-  const { status, body: resp } = await daemonReq(d, 'POST', `/sessions/${encodeURIComponent(session)}/${verb}`, body);
+  // verify can run multiple settles + axe + a theme×viewport sweep; give it a much larger budget
+  // than a single action so a slow page (or a hanging request under the settle cap) never aborts.
+  const ms = verb === 'verify' ? 120000 : 30000;
+  const { status, body: resp } = await daemonReq(d, 'POST', `/sessions/${encodeURIComponent(session)}/${verb}`, body, ms);
   if (status !== 200) return fail(resp.error);
   printResult(verb, resp);
 }
 
-const VERBS = new Set(['goto', 'click', 'dblclick', 'hover', 'type', 'press', 'scroll', 'observe', 'dialog', 'drag', 'upload', 'select']);
+const VERBS = new Set(['goto', 'click', 'dblclick', 'hover', 'type', 'press', 'scroll', 'observe', 'verify', 'read', 'dialog', 'drag', 'upload', 'select']);
 
 // ---- arg parsing ----------------------------------------------------------
 
@@ -220,6 +261,7 @@ const VALUE_FLAGS = {
   '--text': 'text', '--url': 'url', '--to': 'to', '--by': 'by', '--key': 'key', '--from': 'from',
   '--files': 'files', '--values': 'values', '--limit': 'limit', '--cursor': 'cursor',
   '--action': 'action', '--timeout': 'timeoutMs',
+  '--scope': 'scope', '--channel': 'channel', '--since': 'since', '--theme-attr': 'themeAttr',
 };
 
 function parseArgs(argv) {
@@ -230,6 +272,10 @@ function parseArgs(argv) {
     if (a === '--json') JSON_MODE = true;
     else if (a === '--headed') opts.headed = true;
     else if (a === '--submit') opts.submit = true;
+    else if (a === '--themes') opts.themes = true;
+    else if (a === '--viewports') opts.viewports = true;
+    else if (a === '--no-axe') opts.noAxe = true;
+    else if (a === '--no-shots') opts.noShots = true;
     else if (a === '--viewport') {
       const m = /^(\d+)x(\d+)$/.exec(argv[++i] || '');
       if (!m) fail({ code: 'BAD_REQUEST', message: 'bad --viewport, expected WxH e.g. 1280x800' });
@@ -243,7 +289,7 @@ function parseArgs(argv) {
 const HELP = `glassbox <command>
 
   daemon start|stop|status
-  session open <name> [--headed] [--viewport WxH] [--color light|dark] [--base-url URL]
+  session open <name> [--headed] [--viewport WxH] [--color light|dark] [--theme-attr ATTR] [--base-url URL]
   session ls
   session rm <name>
   kill-all
@@ -255,6 +301,10 @@ const HELP = `glassbox <command>
     type <text> --selector CSS [--submit]        press <key> [--selector CSS]
     scroll [--to top|bottom|CSS|eN] [--by PX]     dialog accept|dismiss [--text T]
     drag --from CSS --to CSS    upload --selector CSS --files a,b    select --selector CSS --values x,y
+
+  verify/read:
+    verify [--scope CSS] [--themes] [--viewports] [--no-axe] [--no-shots]
+    read [console|network|errors|overlay] [--since N] [--limit N]
 
   [--json] on any command for machine-readable output`;
 

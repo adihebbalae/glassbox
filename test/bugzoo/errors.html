@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>bugzoo — errors</title></head>
+<body>
+<main>
+<h1>Errors page</h1>
+<p>This page seeds console/network error classes on load.</p>
+</main>
+
+<!-- seed: asset-404 — a subresource that 404s (HTTP error, never fires requestfailed) -->
+<script src="/nope-404.js"></script>
+
+<script>
+  // seed: console-error — a plain console.error on load
+  console.error('SEED console-error: something went wrong during init');
+
+  // seed: unhandled-rejection — surfaces as a pageerror via Runtime.exceptionThrown
+  Promise.reject(new Error('SEED unhandled-rejection: boom'));
+
+  // seed: fetch-500 — 4xx/5xx is transport-success, so it is an httpError not a failed request
+  fetch('/api/500').then(function (r) { if (!r.ok) console.warn('api/500 returned ' + r.status); });
+
+  // seed: hang — a request that never responds; classified as hanging past the threshold
+  fetch('/api/hang').catch(function () {});
+</script>
+</body>
+</html>

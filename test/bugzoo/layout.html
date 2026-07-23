@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — layout</title>
+<style>
+  body { margin: 0; font-family: sans-serif; color: #111; background: #fff; }
+  /* seed: occluded — a fixed banner painted over the button just below it */
+  #banner { position: fixed; top: 0; left: 0; width: 100%; height: 48px; background: #334455; color: #fff; z-index: 1000; }
+  #occluded { position: absolute; top: 12px; left: 12px; }
+  .spacer { height: 64px; }
+  /* seed: overflow — a very wide element forces horizontal page overflow */
+  #wide { width: 3000px; height: 24px; background: #dddddd; }
+  /* seed: contrast — white text on white background */
+  #whiteblock { color: #ffffff; background: #ffffff; }
+  /* seed: zero-size — an interactive target with no rendered box */
+  #zero { width: 0; height: 0; padding: 0; border: 0; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="banner">Fixed banner</div>
+<button id="occluded">Occluded button</button>
+
+<div class="spacer"></div>
+<main>
+  <h1>Layout page</h1>
+
+  <div id="wide">very wide element</div>
+
+  <p id="whiteblock">Invisible white-on-white paragraph text that cannot be read at all.</p>
+
+  <!-- seed: zero-size -->
+  <button id="zero">x</button>
+
+  <!-- seed: broken-img — 404 image, complete && naturalWidth===0 -->
+  <img id="brokenimg" src="/missing-image.png" width="120" height="80" alt="a sales chart">
+
+  <!-- seed: no-aname — icon-only button with no accessible name (axe: button-name) -->
+  <button id="icon"><svg width="24" height="24" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/></svg></button>
+
+  <!-- seed: dead-button — no click handler (M4 coverage will flag it; no verify signal) -->
+  <button id="dead">Dead button (no handler)</button>
+
+  <button id="live">Live button</button>
+</main>
+
+<script>
+  document.getElementById('live').addEventListener('click', function () { document.title = 'clicked'; });
+  // seed: cls — insert a tall banner into normal flow after load, shifting content down
+  setTimeout(function () {
+    var b = document.createElement('div');
+    b.textContent = 'late banner (causes layout shift)';
+    b.style.height = '120px';
+    b.style.background = '#ffeeee';
+    document.body.insertBefore(b, document.getElementById('wide').parentNode);
+  }, 140);
+</script>
+</body>
+</html>

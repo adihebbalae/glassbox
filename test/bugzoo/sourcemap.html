@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>bugzoo — sourcemap</title></head>
+<body>
+<main>
+<h1>Sourcemap page</h1>
+<p>Loads a "bundled" script that throws; its minified frame must remap to original.ts:4.</p>
+</main>
+<!-- seed: sourcemap — /bundle.js carries an inline source map; the throw remaps to original.ts -->
+<script src="/bundle.js"></script>
+</body>
+</html>

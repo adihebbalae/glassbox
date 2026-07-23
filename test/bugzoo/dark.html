@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — dark</title>
+<style>
+  body { background: #ffffff; color: #111111; font-family: sans-serif; margin: 16px; }
+  #note { color: #111111; background: #ffffff; padding: 8px; }
+  /* seed: dark-only — readable in light, but white-on-white once dark mode kicks in
+     (a real bug class: theme flips the text color but not the background) */
+  @media (prefers-color-scheme: dark) {
+    #note { color: #ffffff; background: #ffffff; }
+  }
+</style>
+</head>
+<body>
+<main>
+<h1>Dark page</h1>
+<p id="note">This note is readable in light mode but vanishes (white-on-white) in dark mode.</p>
+</main>
+</body>
+</html>

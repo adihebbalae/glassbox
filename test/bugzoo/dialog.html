@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>bugzoo — dialog</title></head>
+<body>
+<main>
+<h1>Dialog page</h1>
+<!-- seed: confirm-dialog — a native confirm() on click (NOT on load); exercised via `act click` -->
+<button id="ask" onclick="if (confirm('Proceed?')) document.title = 'confirmed'">Ask</button>
+</main>
+</body>
+</html>

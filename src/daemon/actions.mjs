@@ -8,6 +8,7 @@
 // native dialog is surfaced in every response and NEVER hangs the call (playwright-mcp #595).
 import { CODES, gbErr } from '../protocol.mjs';
 import { observe } from './observe.mjs';
+import { verify, read } from './verify.mjs';
 import { settle, ensureObserver, readMut, isDirty } from './settle.mjs';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -223,8 +224,10 @@ async function respondDialog(session, body) {
 export async function handleAction(mgr, name, verb, body = {}) {
   const s = mgr._get(name); // throws NO_SESSION
   if (verb === 'observe') return mgr.runQueued(s, () => observe(s, body));
+  if (verb === 'verify') return mgr.runQueued(s, () => verify(s, body));
+  if (verb === 'read') return mgr.runQueued(s, () => read(s, body));
   if (verb === 'dialog') return mgr.runQueued(s, () => respondDialog(s, body));
   if (verb === 'settle') return mgr.runQueued(s, async () => ({ ok: true, ...(await settle(s, body)) }));
   if (ALL_VERBS.has(verb)) return mgr.runQueued(s, () => runOne(s, verb, body));
-  throw gbErr(CODES.BAD_REQUEST, `unknown action '${verb}'`, { field: 'verb', valid_values: [...ALL_VERBS, 'observe', 'dialog'] });
+  throw gbErr(CODES.BAD_REQUEST, `unknown action '${verb}'`, { field: 'verb', valid_values: [...ALL_VERBS, 'observe', 'verify', 'read', 'dialog'] });
 }

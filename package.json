@@ -7,9 +7,10 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "node test/m1.mjs && node test/m2.mjs",
+    "test": "node test/m1.mjs && node test/m2.mjs && node test/m3.mjs",
     "test:m1": "node test/m1.mjs",
-    "test:m2": "node test/m2.mjs"
+    "test:m2": "node test/m2.mjs",
+    "test:m3": "node test/m3.mjs"
   },
   "keywords": [],
   "author": "",
@@ -20,5 +21,8 @@
   },
   "dependencies": {
     "playwright": "^1.61.1"
+  },
+  "devDependencies": {
+    "axe-core": "^4.12.1"
   }
 }
