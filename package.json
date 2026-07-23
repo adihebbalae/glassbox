@@ -1,0 +1,22 @@
+{
+  "name": "glassbox",
+  "version": "0.1.0",
+  "description": "Instrumented local browser daemon for agentic UI verification",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bin": {
+    "glassbox": "./src/cli.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.61.1"
+  }
+}
