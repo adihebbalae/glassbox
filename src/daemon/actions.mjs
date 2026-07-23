@@ -223,6 +223,16 @@ async function respondDialog(session, body) {
 /** Route one POST /sessions/:name/<verb> — all run through the session's serial queue. */
 export async function handleAction(mgr, name, verb, body = {}) {
   const s = mgr._get(name); // throws NO_SESSION
+  // A paused session's queue is held by the parked (paused) action; a normal verb entering it now
+  // would deadlock. Refuse fast with a structured PAUSED error (never hang) — the agent should
+  // resume or use the debug tools, which run in a parallel lane.
+  if (s.debug && s.debug.paused) {
+    throw gbErr(CODES.PAUSED, `session '${name}' is paused at a breakpoint`, {
+      field: 'session',
+      correction_hint: 'resume (debug resume) or use debug tools (state/inspect/eval/step) while paused',
+      valid_values: ['resume', 'step', 'inspect', 'eval', 'state'],
+    });
+  }
   if (verb === 'observe') return mgr.runQueued(s, () => observe(s, body));
   if (verb === 'verify') return mgr.runQueued(s, () => verify(s, body));
   if (verb === 'read') return mgr.runQueued(s, () => read(s, body));

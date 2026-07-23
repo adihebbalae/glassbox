@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — debug</title>
+<style>
+  body { font-family: sans-serif; color: #111111; background: #ffffff; margin: 16px; }
+  button { min-width: 44px; min-height: 44px; }
+  /* seed: white-on-white with an explicit author override — exercises the M4 style/cascade
+     tool. The low-specificity `p` color loses to the id rule, so it must render as overridden. */
+  p { color: #333333; }
+  #whiteout { color: #ffffff; background: #ffffff; }
+  /* seed: unused CSS — the rightmost selector (button/p/h1) matches real elements so the style
+     engine actually CONSIDERS each rule (no bloom-filter fast-reject), but the ancestor never
+     matches, so they resolve as unused and get reported by CSS rule-usage tracking (M4 coverage). */
+  nav button { color: red; }
+  .sidebar p { color: red; }
+  #missing h1 { color: red; }
+</style>
+</head>
+<body>
+<main>
+<h1>Debug page</h1>
+<p id="whiteout">Invisible white-on-white text; its color rule is overridden by the id selector.</p>
+<button id="primary" type="button">Primary</button>
+<button id="secondary" type="button">Secondary</button>
+<button id="dead" type="button">Dead button (no handler)</button>
+<button id="resultbtn" type="button">idle</button>
+</main>
+<script src="/debug.js"></script>
+</body>
+</html>

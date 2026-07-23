@@ -143,6 +143,21 @@ export function createSourceMapper(session) {
   }
 
   /**
+   * Synchronous, page-free remap using ONLY already-cached maps — safe to call while the target is
+   * paused at a breakpoint (mapForBundle's page.evaluate fetch would hang the frozen main thread,
+   * research 02 §7). Uncached bundles return null (the caller falls back to the raw location).
+   */
+  function remapLocCached(loc) {
+    if (!loc) return null;
+    FRAME_RE.lastIndex = 0;
+    const m = FRAME_RE.exec(loc);
+    if (!m) return null;
+    const parsed = cache.get(m[1]); // undefined (never fetched) or null (no map) → skip
+    if (!parsed) return null;
+    return mapPosition(parsed, Number(m[2]) - 1, Number(m[3]) - 1);
+  }
+
+  /**
    * Remap every frame in a stack string. Returns {frames:[{url,line,col,orig?}], top}. `top` is the
    * first frame that resolved (what a caller wants to surface). Non-resolvable frames pass through.
    */
@@ -178,7 +193,7 @@ export function createSourceMapper(session) {
     return out;
   }
 
-  return { remapLoc, remapStack, remapEntry };
+  return { remapLoc, remapLocCached, remapStack, remapEntry };
 }
 
 /** Lazily attach one remapper per session (cache lives as long as the session). */

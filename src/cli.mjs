@@ -237,6 +237,103 @@ function printResult(verb, r) {
   console.log(`${verb} ok — ${bits.join(', ')}`);
 }
 
+// ---- M4 debug/style verbs -------------------------------------------------
+
+function buildDebugBody(op, pos, opts) {
+  switch (op) {
+    case 'break': return { op, ...(opts.file ? { file: opts.file } : {}), ...(opts.urlRegex ? { urlRegex: opts.urlRegex } : {}), ...(opts.line ? { line: Number(opts.line) } : {}), ...(opts.condition ? { condition: opts.condition } : {}) };
+    case 'inspect': return { op, ...(opts.frame ? { frame: Number(opts.frame) } : {}) };
+    case 'eval': return { op, expression: pos[2] || opts.expression || '', ...(opts.frame ? { frame: Number(opts.frame) } : {}) };
+    case 'step': return { op, mode: pos[2] || opts.mode || 'over' };
+    case 'listeners': return { op, ...(opts.ref ? { ref: opts.ref } : { selector: pos[2] || opts.selector }) };
+    case 'remove': return { op, ...(opts.all ? { all: true } : { breakpointId: pos[2] || opts.breakpointId }) };
+    default: return { op }; // state, resume, pause, list, screenshot, coverage-start, coverage-stop
+  }
+}
+
+function frameLine(f) {
+  const loc = f.orig ? `${f.orig.file}:${f.orig.line}` : `${f.file}:${f.line}`;
+  return `  at ${f.functionName}  (${loc})`;
+}
+
+function printDebug(op, r) {
+  if (JSON_MODE) return out(r);
+  if (op === 'state' || op === 'step') {
+    if (!r.paused) return console.log(op === 'step' ? 'stepped to completion (resumed)' : 'not paused');
+    console.log(`paused (${r.reason})${r.hitBreakpoints?.length ? ' hit ' + r.hitBreakpoints.join(',') : ''}`);
+    for (const f of r.frames || []) console.log(frameLine(f));
+    return;
+  }
+  if (op === 'inspect') {
+    console.log(`frame ${r.frame}: ${r.functionName}`);
+    for (const sc of r.scopes || []) {
+      if (!sc.vars.length) continue;
+      console.log(`  [${sc.type}${sc.name ? ' ' + sc.name : ''}]`);
+      for (const v of sc.vars) console.log(`    ${v.name} = ${v.value}  (${v.type})`);
+    }
+    return;
+  }
+  if (op === 'eval') { console.log(r.threw ? `threw: ${r.error}` : (r.value !== undefined ? JSON.stringify(r.value) : r.preview) + `  (${r.type})`); return; }
+  if (op === 'resume') { console.log(r.resumed ? 'resumed' : (r.note || 'ok')); return; }
+  if (op === 'break') { console.log(`breakpoint ${r.breakpointId} at ${r.file || r.urlRegex}:${r.line}${r.requested && r.requested !== r.line ? ` (requested ${r.requested})` : ''}`); return; }
+  if (op === 'list') { if (!r.breakpoints?.length) return console.log('no breakpoints'); for (const b of r.breakpoints) console.log(`  ${b.breakpointId}  ${b.file || b.urlRegex}:${b.line}${b.condition ? ' if ' + b.condition : ''}`); return; }
+  if (op === 'remove') { console.log(`removed ${r.removed?.length || 0} breakpoint(s)`); return; }
+  if (op === 'screenshot') { console.log(`screenshot -> ${r.path} (${r.bytes} bytes)`); return; }
+  if (op === 'listeners') {
+    if (!r.count) return console.log('no event listeners (dead element)');
+    for (const L of r.listeners) console.log(`  ${L.type}${L.once ? ' once' : ''}${L.capture ? ' capture' : ''}  ${L.sourceLoc || ''}  ${L.source ? '{ ' + L.source + ' }' : ''}`);
+    return;
+  }
+  if (op === 'coverage-start') { console.log(`coverage started${r.css ? ' (css tracked)' : ''}`); return; }
+  if (op === 'coverage-stop') {
+    console.log(`coverage: ${r.js.neverRanCount} never-ran / ${r.js.ranCount} ran; css unused ${r.css.unusedRules ?? '-'}/${r.css.totalRules ?? '-'}`);
+    for (const f of r.js.neverRan || []) console.log(`  never ran: ${f.functionName}  (${f.file}:${f.line})`);
+    if (r.css.topUnused?.length) console.log(`  unused css: ${r.css.topUnused.slice(0, 6).join(', ')}`);
+    console.log(`  report: ${r.report}`);
+    return;
+  }
+  out(r);
+}
+
+async function runDebug(pos, opts) {
+  const session = opts.session || process.env.GLASSBOX_SESSION;
+  if (!session) fail({ code: 'BAD_REQUEST', message: 'session required', correction_hint: 'pass -s <session> or set GLASSBOX_SESSION' });
+  const op = pos[1];
+  if (!op) fail({ code: 'BAD_REQUEST', message: 'debug needs an op', valid_values: ['break', 'state', 'inspect', 'eval', 'step', 'resume', 'pause', 'listeners', 'coverage-start', 'coverage-stop', 'list', 'remove', 'screenshot'] });
+  const d = await ensureDaemon();
+  const body = buildDebugBody(op, pos, opts);
+  const { status, body: resp } = await daemonReq(d, 'POST', `/sessions/${encodeURIComponent(session)}/debug`, body, 60000);
+  if (status !== 200) return fail(resp.error);
+  printDebug(op, resp);
+}
+
+function printStyle(r) {
+  if (JSON_MODE) return out(r);
+  const t = r.target.selector || r.target.ref;
+  console.log(`style ${t} — ${r.rules} matched rule(s)`);
+  const c = r.computed || {};
+  console.log('computed: ' + Object.keys(c).map((k) => `${k}:${c[k]}`).join('  '));
+  if (r.contrast) console.log(`contrast: ${r.contrast.fg} on ${r.contrast.bg} = ${r.contrast.ratio}:1  ${r.contrast.wcagAA ? '✓' : '✗'} WCAG AA`);
+  console.log('cascade (winners first):');
+  for (const rule of r.cascade || []) {
+    console.log(`  ${rule.selector}  (${rule.source})  [${rule.specificity.join(',')}]`);
+    for (const p of rule.properties) console.log(`    ${p.status === 'won' ? '✓' : '✗'} ${p.name}: ${p.value}${p.status === 'overridden' && p.winner ? `  (overridden by ${p.winner})` : ''}`);
+  }
+  if (r.inherited?.length) { console.log('inherited:'); for (const i of r.inherited) console.log(`  ${i.property}: ${i.value}  ← ${i.from} (${i.source})`); }
+  console.log(`[full: ${r.report}]`);
+}
+
+async function runStyle(pos, opts) {
+  const session = opts.session || process.env.GLASSBOX_SESSION;
+  if (!session) fail({ code: 'BAD_REQUEST', message: 'session required', correction_hint: 'pass -s <session> or set GLASSBOX_SESSION' });
+  const body = opts.ref ? { ref: opts.ref } : { selector: pos[1] || opts.selector };
+  if (!body.ref && !body.selector) fail({ code: 'BAD_REQUEST', message: 'style needs a selector or --ref', correction_hint: 'glassbox style "#el" -s <session>' });
+  const d = await ensureDaemon();
+  const { status, body: resp } = await daemonReq(d, 'POST', `/sessions/${encodeURIComponent(session)}/style`, body, 30000);
+  if (status !== 200) return fail(resp.error);
+  printStyle(resp);
+}
+
 async function runVerb(verb, pos, opts) {
   const session = opts.session || process.env.GLASSBOX_SESSION;
   if (!session) fail({ code: 'BAD_REQUEST', message: 'session required', correction_hint: 'pass -s <session> or set GLASSBOX_SESSION' });
@@ -262,6 +359,9 @@ const VALUE_FLAGS = {
   '--files': 'files', '--values': 'values', '--limit': 'limit', '--cursor': 'cursor',
   '--action': 'action', '--timeout': 'timeoutMs',
   '--scope': 'scope', '--channel': 'channel', '--since': 'since', '--theme-attr': 'themeAttr',
+  // M4 debug/style
+  '--file': 'file', '--line': 'line', '--condition': 'condition', '--url-regex': 'urlRegex',
+  '--frame': 'frame', '--expression': 'expression', '--mode': 'mode', '--breakpoint': 'breakpointId',
 };
 
 function parseArgs(argv) {
@@ -271,6 +371,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--json') JSON_MODE = true;
     else if (a === '--headed') opts.headed = true;
+    else if (a === '--all') opts.all = true;
     else if (a === '--submit') opts.submit = true;
     else if (a === '--themes') opts.themes = true;
     else if (a === '--viewports') opts.viewports = true;
@@ -306,6 +407,14 @@ const HELP = `glassbox <command>
     verify [--scope CSS] [--themes] [--viewports] [--no-axe] [--no-shots]
     read [console|network|errors|overlay] [--since N] [--limit N]
 
+  debug (white-box; -s <session>):
+    debug break --file app.js --line N [--condition EXPR] | --url-regex RE --line N
+    debug state | inspect [--frame N] | eval "<expr>" [--frame N]
+    debug step [over|into|out] | resume | pause | screenshot
+    debug listeners <css> | --ref eN         debug list | remove <bpId> | remove --all
+    debug coverage-start … coverage-stop
+    style <css> | --ref eN                    (why-does-this-look-wrong: cascade + contrast)
+
   [--json] on any command for machine-readable output`;
 
 async function main() {
@@ -319,6 +428,8 @@ async function main() {
     if (verb === 'session' && (sub === 'ls' || sub === 'list')) return await sessionLs();
     if (verb === 'session' && (sub === 'rm' || sub === 'close')) return await sessionRm(arg);
     if (verb === 'kill-all') return await killAll();
+    if (verb === 'debug') return await runDebug(pos, opts);
+    if (verb === 'style') return await runStyle(pos, opts);
     if (VERBS.has(verb)) return await runVerb(verb, pos, opts);
     console.log(HELP);
     process.exitCode = verb ? 1 : 0;

@@ -33,6 +33,8 @@ export const CODES = Object.freeze({
   NO_DIALOG: 'NO_DIALOG', // dialog responder called with nothing pending
   // M3 — verification engine
   BAD_CHANNEL: 'BAD_CHANNEL', // read() got a channel that isn't console|network|errors|overlay
+  // M4 — white-box debug plane
+  PAUSED: 'PAUSED', // the session is paused at a breakpoint; resume or use debug tools, don't hang
 });
 
 export const HTTP_STATUS = Object.freeze({
@@ -48,6 +50,7 @@ export const HTTP_STATUS = Object.freeze({
   DIALOG_PENDING: 409,
   NO_DIALOG: 409,
   BAD_CHANNEL: 400,
+  PAUSED: 409,
 });
 
 /**

@@ -11,6 +11,8 @@ import {
 } from '../protocol.mjs';
 import { createSessionManager } from './sessions.mjs';
 import { handleAction } from './actions.mjs';
+import { handleDebug } from './debug.mjs';
+import { handleStyle } from './style.mjs';
 import { sweepOrphans } from './prockit.mjs';
 
 const TOKEN = crypto.randomBytes(32).toString('hex');
@@ -84,12 +86,15 @@ async function handle(req, res, mgr) {
     if (method === 'GET' && p === '/sessions') {
       return send(res, 200, { sessions: mgr.list() });
     }
-    // M2 action verbs: POST /sessions/:name/<verb> (observe, goto, click, type, dialog, …).
-    // /probe stays with the M1 handler below (excluded here).
+    // M2 action verbs + M4 debug/style: POST /sessions/:name/<verb> (observe, goto, click, …,
+    // debug, style). /probe stays with the M1 handler below (excluded here).
     const mv = /^\/sessions\/([^/]+)\/([a-z]+)$/.exec(p);
     if (mv && method === 'POST' && mv[2] !== 'probe') {
+      const name = decodeURIComponent(mv[1]);
       const body = await readJson(req);
-      return send(res, 200, await handleAction(mgr, decodeURIComponent(mv[1]), mv[2], body));
+      if (mv[2] === 'debug') return send(res, 200, await handleDebug(mgr, name, body));
+      if (mv[2] === 'style') return send(res, 200, await handleStyle(mgr, name, body));
+      return send(res, 200, await handleAction(mgr, name, mv[2], body));
     }
     const m = /^\/sessions\/([^/]+)(\/probe)?$/.exec(p);
     if (m) {
