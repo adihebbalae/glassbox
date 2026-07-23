@@ -11,11 +11,14 @@ project lives here, its own repo (`main`).
 
 ## Phase status
 - [x] Phase 0 — First principles written (`docs/00-first-principles.md`)
-- [ ] Phase 1 — Research fleet (8 sonnet agents → `docs/research/*.md`) — IN FLIGHT
-- [ ] Phase 2 — Synthesis + architecture decision (`docs/01-architecture.md`)
-- [ ] Phase 3 — Build plan (`docs/02-build-plan.md`)
-- [ ] Phase 4 — Build (opus agents, milestone-tested)
-- [ ] Phase 5 — End-to-end validation against a real site + skill file for Claude Code
+- [x] Phase 0.5 — Feasibility spikes (`spikes/SPIKES.md`): zero-dep CDP, debug plane,
+      observation economics — all PASS
+- [x] Phase 1 — Research fleet: 8/8 sonnet reports in `docs/research/` (1.01M tokens)
+- [x] Phase 2 — Architecture decided (`docs/01-architecture.md`): Playwright lib +
+      CDPSession escape hatch; daemon + named-context sessions; CLI+MCP duality
+- [x] Phase 3 — Build plan (`docs/02-build-plan.md`): milestones M1–M8
+- [ ] Phase 4 — Build: M1 spine → M2 act/observe → M3 verify → M4/M6 ∥ → M5 → M7 → M8
+- [ ] Phase 5 — End-to-end validation (bug-zoo + WCII dev server + MCP smoke)
 
 ## Decisions log
 - 2026-07-23: Name = Glassbox. Repo at `C:\Users\boomb\Documents\_Projects\glassbox`.
