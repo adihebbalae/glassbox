@@ -17,13 +17,20 @@ project lives here, its own repo (`main`).
 - [x] Phase 2 — Architecture decided (`docs/01-architecture.md`): Playwright lib +
       CDPSession escape hatch; daemon + named-context sessions; CLI+MCP duality
 - [x] Phase 3 — Build plan (`docs/02-build-plan.md`): milestones M1–M8
-- [x] Phase 4 (partial) — M1 (10/10) → M2 (12/12) → M3 (26/26) → M4 (23/23) →
-      M6 (19/19) → M5 (23/23, MCP shim + CLI + skill). Suite `npm test` green, 113 checks.
-- [ ] M7 — dev-loop (`glassbox dev`): spawn dev cmd, stdout-regex URL discovery, overlay
-- [ ] M8 — E2E validation + hardening. Known items for M8: m4 `c2` flake under load
-      (raise 60s daemonReq budget, catch AbortError → structured timeout); never run an
-      in-process fixture server alongside spawnSync; MCP smoke via skill/mcp-config-example.json
-- [ ] Phase 5 — validation vs WCII dev server + README + memory write
+- [x] Phase 4 — ALL milestones complete: M1 (10/10) → M2 (12/12) → M3 (26/26) →
+      M4 (23/23) → M6 (19/19) → M5 (23/23) → M7 (32/32, dev-loop) → M8 (39/39,
+      hardening + full-system). Suite `npm test` = **184/184 green × 2 consecutive runs**,
+      zero flakes, zero chromium orphans. Tagged **v0.1.0**.
+- [x] Phase 5 — validated vs live WCII (test/live-wcii.mjs 9/9, not in npm test) AND
+      dogfooded from the orchestrating Claude session against https://wcii.pages.dev/:
+      session/goto/verify --themes/observe/style/screenshot/kill-all all correct.
+      **Found a real production bug: wcii.pages.dev/favicon.ico → 404** (console error +
+      2 httpError rows). README written; memory file written.
+
+## Known limitations (v0.1.0)
+- display:none treated as deliberate (mobile-nav lesson) — an accidentally-hidden element
+  won't be flagged; no expected-404 allowlist yet; win32-only proven; parallelism tested
+  at 4 sessions; live-wcii check is manual, not CI-gated.
 
 ## Decisions log
 - 2026-07-23: Name = Glassbox. Repo at `C:\Users\boomb\Documents\_Projects\glassbox`.
