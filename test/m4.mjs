@@ -51,7 +51,7 @@ async function run() {
   if (!d) return;
   const post = (s, verb, body, ms) => daemonReq(d, 'POST', `/sessions/${s}/${verb}`, body || {}, ms);
   const act = async (s, verb, body, ms) => (await post(s, verb, body, ms)).body;
-  const dbg = (s, body) => act(s, 'debug', body, 60000);
+  const dbg = (s, body, ms = 60000) => act(s, 'debug', body, ms);
   const goto = (s, url) => act(s, 'goto', { url }, 30000);
   const createSession = (name) => daemonReq(d, 'POST', '/sessions', { name });
 
@@ -79,9 +79,16 @@ async function run() {
   const ev = await dbg('dbg', { op: 'eval', expression: 'total + doubled' });
   check('c1 eval-on-frame computes with locals', ev.value === 63, `value=${ev.value} type=${ev.type}`);
 
-  const shot = await dbg('dbg', { op: 'screenshot' });
-  check('c2 screenshot succeeds while paused', shot.ok && shot.bytes > 0 && fs.existsSync(shot.path),
-    `bytes=${shot.bytes} path=${shot.path}`);
+  // A screenshot of a FROZEN page is the slowest call in this proof (Page.captureScreenshot can
+  // wait on a compositor frame that a paused main thread won't produce until it times out), so it
+  // gets a 120s budget — and an AbortError becomes a structured FAIL line, never an unhandled
+  // throw that takes the whole harness down with it.
+  let shot = null;
+  let shotErr = '';
+  try { shot = await dbg('dbg', { op: 'screenshot' }, 120000); }
+  catch (e) { shotErr = e?.name === 'AbortError' ? 'timed out after 120s' : (e?.message || String(e)); }
+  check('c2 screenshot succeeds while paused', !!shot?.ok && shot.bytes > 0 && fs.existsSync(shot.path),
+    shotErr ? `ERROR ${shotErr}` : `bytes=${shot?.bytes} path=${shot?.path}`);
 
   await createSession('sib');
   await goto('sib', base + '/clean.html');

@@ -39,6 +39,8 @@ export const CODES = Object.freeze({
   BAD_CHANNEL: 'BAD_CHANNEL', // read() got a channel that isn't console|network|errors|overlay
   // M4 — white-box debug plane
   PAUSED: 'PAUSED', // the session is paused at a breakpoint; resume or use debug tools, don't hang
+  // M7 — dev-loop
+  DEV_NO_URL: 'DEV_NO_URL', // the dev command printed no ready URL (or died) inside the budget
 });
 
 export const HTTP_STATUS = Object.freeze({
@@ -55,6 +57,7 @@ export const HTTP_STATUS = Object.freeze({
   NO_DIALOG: 409,
   BAD_CHANNEL: 400,
   PAUSED: 409,
+  DEV_NO_URL: 504,
 });
 
 /**

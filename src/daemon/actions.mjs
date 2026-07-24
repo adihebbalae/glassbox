@@ -224,6 +224,14 @@ async function respondDialog(session, body) {
 /** Route one POST /sessions/:name/<verb> — all run through the session's serial queue. */
 export async function handleAction(mgr, name, verb, body = {}) {
   const s = mgr._get(name); // throws NO_SESSION
+  // M7: record an out-of-band event (a dev-server rebuild) in the session journal. Deliberately
+  // ahead of the paused guard and outside the serial queue — journaling is a synchronous file
+  // append that must land even while a breakpoint holds the queue, and it touches no page state.
+  if (verb === 'journal') {
+    const event = typeof body.event === 'string' && body.event ? body.event : 'note';
+    s.journal.log(event, body.data && typeof body.data === 'object' ? body.data : {});
+    return { ok: true, event };
+  }
   // A paused session's queue is held by the parked (paused) action; a normal verb entering it now
   // would deadlock. Refuse fast with a structured PAUSED error (never hang) — the agent should
   // resume or use the debug tools, which run in a parallel lane.
@@ -245,5 +253,5 @@ export async function handleAction(mgr, name, verb, body = {}) {
   if (verb === 'screenshot') return mgr.runQueued(s, () => screenshotAction(s, body));
   if (verb === 'wait') return mgr.runQueued(s, () => waitFor(s, body));
   if (ALL_VERBS.has(verb)) return mgr.runQueued(s, () => runOne(s, verb, body));
-  throw gbErr(CODES.BAD_REQUEST, `unknown action '${verb}'`, { field: 'verb', valid_values: [...ALL_VERBS, 'observe', 'verify', 'read', 'dialog', 'settle', 'eval', 'screenshot', 'wait'] });
+  throw gbErr(CODES.BAD_REQUEST, `unknown action '${verb}'`, { field: 'verb', valid_values: [...ALL_VERBS, 'observe', 'verify', 'read', 'dialog', 'settle', 'eval', 'screenshot', 'wait', 'journal'] });
 }

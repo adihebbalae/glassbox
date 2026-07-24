@@ -79,7 +79,20 @@ gb_watch {session}   → { watchUrl, devtoolsFrontend }
 
 Give them `watchUrl` (a live screencast + click/key takeover page). `devtoolsFrontend` pastes into a Chromium address bar for real DevTools against the same tab.
 
-## 7. Worked example (compact)
+## 7. Dev-server loop (CLI, via Bash)
+
+When you're iterating against a dev server, run it *through* Glassbox instead of starting it yourself — one command spawns it, finds its URL in its own output, attaches a session, and verifies:
+
+```
+glassbox dev --cmd "npm run dev" --cwd . -s dev        # streams until you stop it (q + Enter)
+glassbox dev --cmd "npm run dev" --no-attach           # just print the discovered URL and exit
+```
+
+It prints the ready URL, a watch URL for your human, and the first `verify`. After that, every rebuild the server logs is journaled and re-checks the build-error overlay, printing `BUILD ERROR [vite] …` when your edit doesn't compile. Add `--auto-verify` to re-run the full verify on each rebuild. The session it attaches (`dev` by default) is a normal session — keep using `gb_verify {session:"dev"}` and every other tool against it from MCP while the loop runs.
+
+This one is CLI-only on purpose (the MCP tool surface is capped); run it with Bash, background it if you want to keep working, and stop it with `q` + Enter or `glassbox kill-all`.
+
+## 8. Worked example (compact)
 
 ```
 gb_session {op:"open", name:"login-fix"}

@@ -11,6 +11,7 @@ import {
 import {
   verifyGlassboxPid, processAlive, taskkillTree, listGlassboxChromium, sweepOrphans,
 } from './daemon/prockit.mjs';
+import { runDev, sweepDevOrphans } from './dev.mjs';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 let JSON_MODE = false;
@@ -116,6 +117,7 @@ async function killAll() {
   }
   // Force-kill the daemon only after confirming the PID is really ours (PID-reuse guard).
   if (daemonPid && processAlive(daemonPid) && verifyGlassboxPid(daemonPid)) taskkillTree(daemonPid);
+  const devOrphans = sweepDevOrphans(); // dev servers whose `glassbox dev` died without cleanup
   const before = listGlassboxChromium().length;
   sweepOrphans();
   await delay(300);
@@ -126,8 +128,8 @@ async function killAll() {
     /* already gone */
   }
   out(
-    { ok: true, daemonPid: daemonPid ?? null, chromiumBefore: before, chromiumAfter: after },
-    `kill-all done — daemon ${daemonPid ?? '(none)'}, chromium ${before} -> ${after}`
+    { ok: true, daemonPid: daemonPid ?? null, chromiumBefore: before, chromiumAfter: after, devOrphans },
+    `kill-all done — daemon ${daemonPid ?? '(none)'}, chromium ${before} -> ${after}, dev orphans reaped ${devOrphans}`
   );
 }
 
@@ -397,6 +399,18 @@ async function runArtifacts(opts) {
   }
 }
 
+// ---- M7 dev loop ----------------------------------------------------------
+
+// Long-running and streaming, so it owns stdout for its lifetime; structured failures unwind
+// through fail() like every other verb. CLI-only on purpose (see the header of dev.mjs).
+async function runDevVerb(opts) {
+  try {
+    await runDev(opts, JSON_MODE);
+  } catch (e) {
+    fail(e.gb || { code: 'INTERNAL', message: e?.message || String(e) });
+  }
+}
+
 async function runMcp() {
   const { runShim } = await import('./mcp-shim.mjs');
   runShim(); // takes over stdin/stdout — becomes the MCP server for its lifetime
@@ -412,6 +426,8 @@ const VALUE_FLAGS = {
   '--files': 'files', '--values': 'values', '--limit': 'limit', '--cursor': 'cursor',
   '--action': 'action', '--timeout': 'timeoutMs',
   '--scope': 'scope', '--channel': 'channel', '--since': 'since', '--theme-attr': 'themeAttr',
+  // M7 dev loop ('--timeout' doubles as dev's startup budget, in SECONDS — see dev.mjs)
+  '--cmd': 'cmd', '--cwd': 'cwd',
   // M4 debug/style
   '--file': 'file', '--line': 'line', '--condition': 'condition', '--url-regex': 'urlRegex',
   '--frame': 'frame', '--expression': 'expression', '--mode': 'mode', '--breakpoint': 'breakpointId',
@@ -435,6 +451,8 @@ function parseArgs(argv) {
     else if (a === '--full') opts.fullPage = true;
     else if (a === '--hydration') opts.hydration = true;
     else if (a === '--await') opts.awaitPromise = true;
+    else if (a === '--no-attach') opts.noAttach = true;
+    else if (a === '--auto-verify') opts.autoVerify = true;
     else if (a === '--viewport') {
       const m = /^(\d+)x(\d+)$/.exec(argv[++i] || '');
       if (!m) fail({ code: 'BAD_REQUEST', message: 'bad --viewport, expected WxH e.g. 1280x800' });
@@ -479,7 +497,13 @@ DEBUG   (white-box; -s <session>)
   style <css> | --ref eN                       (why-does-this-look-wrong: cascade + contrast)
 
 WATCH
-  watch [session]              (live screencast + takeover page; no arg = session grid)`;
+  watch [session]              (live screencast + takeover page; no arg = session grid)
+
+DEV LOOP
+  dev [--cmd "npm run dev"] [--cwd DIR] [-s SESSION] [--timeout SECONDS] [--no-attach] [--auto-verify]
+      Spawns your dev server, finds its ready URL in its own output, attaches session 'dev',
+      runs one verify, then streams: each rebuild is journaled and the build-error overlay
+      re-read. q + Enter (or Ctrl-C) stops the server. --no-attach = print the URL and exit.`;
 
 async function main() {
   try {
@@ -493,6 +517,7 @@ async function main() {
     if (verb === 'session' && (sub === 'rm' || sub === 'close')) return await sessionRm(arg);
     if (verb === 'kill-all') return await killAll();
     if (verb === 'watch') return await watch(sub);
+    if (verb === 'dev') return await runDevVerb(opts);
     if (verb === 'mcp') return await runMcp();
     if (verb === 'artifacts') return await runArtifacts(opts);
     if (verb === 'debug') return await runDebug(pos, opts);
