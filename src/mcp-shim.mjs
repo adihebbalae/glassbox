@@ -11,9 +11,11 @@
 // artifacts are returned as FILE PATHS, never inline base64 (Claude Code's 10-20x image tax).
 // Structured daemon errors become isError text carrying {code, message, correction_hint,
 // valid_values} — a stale ref / PAUSED / bad session is self-correcting from the message alone.
-import { ensureDaemon, daemonReq } from './protocol.mjs';
+import { VERSION, ensureDaemon, daemonReq } from './protocol.mjs';
 
-const SERVER_INFO = { name: 'glassbox', version: '0.1.0' };
+// One version for the whole product: protocol.mjs is the source, package.json and daemon.json agree
+// (asserted in test/m8) — a client that sees serverInfo is seeing the daemon's real build.
+const SERVER_INFO = { name: 'glassbox', version: VERSION };
 const LATEST_PROTOCOL = '2025-06-18';
 const KNOWN_PROTOCOLS = new Set(['2025-06-18', '2025-03-26', '2024-11-05']);
 const MAX_TEXT = 20000; // per research 04 §4.6 — cap inline text, spill the rest to the artifact path

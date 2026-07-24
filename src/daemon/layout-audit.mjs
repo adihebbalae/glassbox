@@ -5,7 +5,8 @@
 //
 // Checks: horizontal overflow (page + the outermost elements past the right edge), occlusion
 // (interactive element whose center elementFromPoint hits a different, non-ancestor element — the
-// occluder is reported), invisible-but-present interactive (Element.checkVisibility opacity/CSS),
+// occluder is reported), invisible-but-laid-out interactive (Element.checkVisibility, narrowed to
+// elements that still occupy a box — display:none is deliberate, see the sweep below),
 // zero-size interactive targets, broken images (complete && naturalWidth===0), text contrast
 // (effective fg composited over the effective bg walk, WCAG relative-luminance ratio < threshold),
 // and CLS (buffered layout-shift entries, hadRecentInput filtered, with moved-node descriptions).
@@ -57,10 +58,26 @@ export function layoutAuditSource(cfg = {}) {
   }
 
   // --- interactive sweep: occlusion / invisible / zero-size ------------------
+  // \`display:none\` (on the element or an ancestor) is the STANDARD way to hide a responsive
+  // alternate, a closed menu, or a dialog — it collapses the box to 0×0, is unfocusable, and is
+  // almost always deliberate. Flagging it turns every responsive site into a wall of noise (proven
+  // against a real Astro site: 9 of 12 findings were one hidden mobile nav). So the invisible class
+  // is narrowed to what is genuinely a bug: an element that STILL OCCUPIES LAYOUT yet cannot be
+  // seen (visibility:hidden / opacity:0 / content-visibility) — the invisible-overlay-button and
+  // forgot-to-fade-back-in cases. Zero-size is likewise only asserted for elements that ARE visible.
   for (const el of root.querySelectorAll(SEL)) {
     const r = el.getBoundingClientRect();
-    if (!visible(el)) { cappedPush(out.invisible, 'invisible', { type:'invisible', desc:describe(el), detail:'present in the DOM but not visible (display/visibility/opacity/content-visibility)' }); continue; }
-    if (r.width < 1 || r.height < 1) { cappedPush(out.zeroSize, 'zeroSize', { type:'zeroSize', desc:describe(el), detail:'interactive target measures ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px' }); continue; }
+    const occupies = r.width >= 1 && r.height >= 1;
+    if (!visible(el)) {
+      if (occupies) {
+        const cs0 = getComputedStyle(el);
+        const why = cs0.visibility !== 'visible' ? 'visibility:' + cs0.visibility
+          : (parseFloat(cs0.opacity) === 0 ? 'opacity:0' : 'content-visibility');
+        cappedPush(out.invisible, 'invisible', { type:'invisible', desc:describe(el), detail:'takes up ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px of layout but cannot be seen (' + why + ')' });
+      }
+      continue;
+    }
+    if (!occupies) { cappedPush(out.zeroSize, 'zeroSize', { type:'zeroSize', desc:describe(el), detail:'interactive target measures ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px' }); continue; }
     const cx = r.left + r.width/2, cy = r.top + r.height/2;
     if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) continue;
     let hit; try { hit = document.elementFromPoint(cx, cy); } catch(e) { hit = null; }

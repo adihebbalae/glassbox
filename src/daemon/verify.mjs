@@ -19,6 +19,7 @@ const LAYOUT_CATS = ['overflow', 'occlusion', 'invisible', 'zeroSize', 'brokenIm
 // would be measurement noise, not a real regression.
 const COMBO_CATS = ['overflow', 'occlusion', 'invisible', 'zeroSize', 'brokenImages', 'contrast'];
 const RANK = { error: 0, warn: 1, info: 2 };
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const raf = (page) => page.evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(()=>r(1))))').catch(() => {});
 const safe = (s) => String(s).replace(/[^\w.-]+/g, '_').slice(0, 40);
 
@@ -91,12 +92,19 @@ async function restoreEmulation(session, origVp, origTheme) {
     await page.evaluate(([a, t]) => { if (t == null) document.documentElement.removeAttribute(a); else document.documentElement.setAttribute(a, t); }, [session.themeAttr, origTheme]).catch(() => {});
   }
 }
+// Page.captureScreenshot can wait on a compositor frame the page may never produce (a frozen main
+// thread, a backgrounded target under a parallel run). A capture is an ATTACHMENT to the report, so
+// it is bounded and degrades to null — a screenshot must never be able to wedge a verify.
+const SHOT_CAP_MS = 20000;
+
 async function shoot(session, n, label) {
   try {
     await session.cdp.send('Page.enable').catch(() => {});
-    const { data } = await session.cdp.send('Page.captureScreenshot', { format: 'webp', quality: 70, captureBeyondViewport: false });
+    const shot = session.cdp.send('Page.captureScreenshot', { format: 'webp', quality: 70, captureBeyondViewport: false }).catch(() => null);
+    const res = await Promise.race([shot, delay(SHOT_CAP_MS).then(() => null)]);
+    if (!res) return null;
     const p = session.journal.alloc('shots', `verify-${n}-${safe(label)}.webp`);
-    fs.writeFileSync(p, Buffer.from(data, 'base64'));
+    fs.writeFileSync(p, Buffer.from(res.data, 'base64'));
     return p;
   } catch { return null; }
 }

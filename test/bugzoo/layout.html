@@ -15,6 +15,11 @@
   #whiteblock { color: #ffffff; background: #ffffff; }
   /* seed: zero-size — an interactive target with no rendered box */
   #zero { width: 0; height: 0; padding: 0; border: 0; overflow: hidden; }
+  /* seed: invisible — occupies layout but cannot be seen (the narrowed invisible class) */
+  #ghost { opacity: 0; }
+  /* control, NOT a seed: hidden the ordinary responsive way. display:none must never be reported —
+     it is how every site hides a mobile nav at desktop width (the false-positive guard). */
+  #offmenu { display: none; }
 </style>
 </head>
 <body>
@@ -42,6 +47,12 @@
   <button id="dead">Dead button (no handler)</button>
 
   <button id="live">Live button</button>
+
+  <!-- seed: invisible — laid out at full size, but opacity:0 makes it unclickable-by-eye -->
+  <button id="ghost">Invisible submit</button>
+
+  <!-- control: a mobile nav hidden with display:none. NOTHING here may be reported. -->
+  <nav id="offmenu"><a id="offlink" href="/somewhere">Mobile only</a><button id="offbtn">Menu</button></nav>
 </main>
 
 <script>

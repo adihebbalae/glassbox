@@ -17,8 +17,13 @@ project lives here, its own repo (`main`).
 - [x] Phase 2 — Architecture decided (`docs/01-architecture.md`): Playwright lib +
       CDPSession escape hatch; daemon + named-context sessions; CLI+MCP duality
 - [x] Phase 3 — Build plan (`docs/02-build-plan.md`): milestones M1–M8
-- [ ] Phase 4 — Build: M1 spine → M2 act/observe → M3 verify → M4/M6 ∥ → M5 → M7 → M8
-- [ ] Phase 5 — End-to-end validation (bug-zoo + WCII dev server + MCP smoke)
+- [x] Phase 4 (partial) — M1 (10/10) → M2 (12/12) → M3 (26/26) → M4 (23/23) →
+      M6 (19/19) → M5 (23/23, MCP shim + CLI + skill). Suite `npm test` green, 113 checks.
+- [ ] M7 — dev-loop (`glassbox dev`): spawn dev cmd, stdout-regex URL discovery, overlay
+- [ ] M8 — E2E validation + hardening. Known items for M8: m4 `c2` flake under load
+      (raise 60s daemonReq budget, catch AbortError → structured timeout); never run an
+      in-process fixture server alongside spawnSync; MCP smoke via skill/mcp-config-example.json
+- [ ] Phase 5 — validation vs WCII dev server + README + memory write
 
 ## Decisions log
 - 2026-07-23: Name = Glassbox. Repo at `C:\Users\boomb\Documents\_Projects\glassbox`.

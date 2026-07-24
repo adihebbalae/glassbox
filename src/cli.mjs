@@ -509,6 +509,8 @@ async function main() {
   try {
     const { pos, opts } = parseArgs(process.argv.slice(2));
     const [verb, sub, arg] = pos;
+    // Asking for help is a success; an unknown verb (the fallthrough at the bottom) is not.
+    if (!verb || verb === 'help' || verb === '--help' || verb === '-h') return console.log(HELP);
     if (verb === 'daemon' && sub === 'start') return await daemonStart();
     if (verb === 'daemon' && sub === 'stop') return await daemonStop();
     if (verb === 'daemon' && sub === 'status') return await daemonStatus();
@@ -524,8 +526,9 @@ async function main() {
     if (verb === 'style') return await runStyle(pos, opts);
     if (verb === 'shot') return await runVerb('screenshot', pos, opts); // alias
     if (VERBS.has(verb)) return await runVerb(verb, pos, opts);
+    console.error(`unknown command '${verb}'`);
     console.log(HELP);
-    process.exitCode = verb ? 1 : 0;
+    process.exitCode = 1;
   } catch (e) {
     if (e instanceof ExitSignal) return; // exitCode already set, message already printed
     console.error(`error [INTERNAL]: ${e?.message || e}`);

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — hydration</title>
+<style>
+  body { font-family: sans-serif; color: #111111; background: #ffffff; margin: 16px; }
+  astro-island { display: block; }
+</style>
+</head>
+<body>
+<main>
+<h1>Hydration page</h1>
+
+<!-- seed: hydration-delay — a SIMULATED Astro island. `astro-island[ssr]` is the framework signal
+     the composite settle waits on (arch §4): Astro's client runtime strips the `ssr` attribute once
+     the island's component has mounted, so its absence means "hydrated". The script below does the
+     same thing 800ms late (a real slow island), which settle must wait through.
+     `?stuck=1` never strips it — the island that never hydrates. Everything else on the page is
+     quiet, so the network/DOM-quiet/rAF phases all pass immediately and ONLY the astro phase can
+     still be gating: settle must return settled:false with why:['astro'] instead of hanging. -->
+<astro-island ssr uid="gbx-island-1" component-export="Counter">
+  <div id="island-body">server-rendered placeholder</div>
+</astro-island>
+</main>
+
+<script>
+  window.__gbxHydratedAt = 0;
+  if (!/[?&]stuck=1\b/.test(location.search)) {
+    setTimeout(function () {
+      document.querySelector('astro-island').removeAttribute('ssr');
+      document.getElementById('island-body').textContent = 'hydrated';
+      window.__gbxHydratedAt = Date.now();
+    }, 800);
+  }
+</script>
+</body>
+</html>
