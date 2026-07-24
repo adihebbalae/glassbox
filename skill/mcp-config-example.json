@@ -1,0 +1,11 @@
+{
+  "//": "Add this to your project's .mcp.json (or ~/.claude.json under mcpServers). Replace the",
+  "//path": "absolute path with wherever glassbox is checked out. `glassbox mcp` runs the stdio MCP",
+  "//shim": "server, which auto-starts the shared daemon on first use — no separate 'start' step.",
+  "mcpServers": {
+    "glassbox": {
+      "command": "node",
+      "args": ["C:/Users/you/path/to/glassbox/src/cli.mjs", "mcp"]
+    }
+  }
+}

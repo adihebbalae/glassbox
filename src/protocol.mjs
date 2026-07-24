@@ -1,7 +1,11 @@
-// Shared contract between daemon, cli, and the (future) mcp shim: error codes, the
-// structured error shape, runtime paths, and a tiny authed HTTP client for the control
-// plane. No heavy imports here — cli.mjs must stay playwright-free for fast startup.
+// Shared contract between daemon, cli, and the mcp shim: error codes, the structured error
+// shape, runtime paths, a tiny authed HTTP client for the control plane, and the auto-start
+// helper both faces (CLI + MCP shim) use to reach a live daemon. Only cheap Node builtins here
+// (path/fs/child_process/url) — cli.mjs and the shim must stay playwright-free for fast startup.
 import path from 'node:path';
+import fs from 'node:fs';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 export const VERSION = '0.1.0';
 export const HOST = '127.0.0.1';
@@ -101,4 +105,39 @@ export async function probeDaemon(d) {
   } catch {
     return false;
   }
+}
+
+// The daemon entry, resolved once as a path string (NOT an import — no cycle: daemon.mjs imports
+// this file, this file only spawns it by path).
+const DAEMON_ENTRY = fileURLToPath(new URL('./daemon/daemon.mjs', import.meta.url));
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Read the discovery file, or null if absent/unreadable. */
+export function readDaemonFile() {
+  try {
+    return JSON.parse(fs.readFileSync(PATHS.daemonFile, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ensure a live daemon and return its {port, token, pid, ...} descriptor. Fast path: a pingable
+ * discovery file. Otherwise spawn a detached daemon and poll ping+probe until live (15s cap).
+ * Throws a structured gbErr(DAEMON_UNREACHABLE) on failure — the CLI turns that into an exit, the
+ * MCP shim into an isError result. Shared so both faces auto-start identically.
+ */
+export async function ensureDaemon() {
+  const existing = readDaemonFile();
+  if (existing && (await pingDaemon(existing))) return existing; // fast path
+  spawn(process.execPath, [DAEMON_ENTRY], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    await delay(200);
+    const d = readDaemonFile();
+    if (d && (await pingDaemon(d)) && (await probeDaemon(d))) return d;
+  }
+  throw gbErr(CODES.DAEMON_UNREACHABLE, 'daemon did not become live within 15s', {
+    correction_hint: 'check for a crashed daemon (glassbox daemon status) or run glassbox kill-all',
+  });
 }

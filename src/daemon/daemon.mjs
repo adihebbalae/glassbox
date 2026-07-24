@@ -11,6 +11,7 @@ import {
 } from '../protocol.mjs';
 import { createSessionManager } from './sessions.mjs';
 import { handleAction } from './actions.mjs';
+import { listArtifacts } from './extras.mjs';
 import { handleDebug } from './debug.mjs';
 import { handleStyle } from './style.mjs';
 import { handleWatchUpgrade } from './screencast.mjs';
@@ -109,8 +110,11 @@ async function handle(req, res, mgr) {
     if (method === 'GET' && p === '/sessions') {
       return send(res, 200, { sessions: mgr.list() });
     }
-    // M2 action verbs + M4 debug/style: POST /sessions/:name/<verb> (observe, goto, click, …,
-    // debug, style). /probe stays with the M1 handler below (excluded here).
+    // M5: GET /sessions/:name/artifacts — list on-disk artifacts grouped by kind (no queue needed).
+    const am = /^\/sessions\/([^/]+)\/artifacts$/.exec(p);
+    if (am && method === 'GET') return send(res, 200, listArtifacts(mgr._get(decodeURIComponent(am[1]))));
+    // M2 action verbs + M4 debug/style + M5 eval/screenshot/wait: POST /sessions/:name/<verb>.
+    // /probe stays with the M1 handler below (excluded here).
     const mv = /^\/sessions\/([^/]+)\/([a-z]+)$/.exec(p);
     if (mv && method === 'POST' && mv[2] !== 'probe') {
       const name = decodeURIComponent(mv[1]);

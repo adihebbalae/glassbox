@@ -24,6 +24,11 @@ export function startBugzoo() {
   const server = http.createServer((req, res) => {
     const url = req.url.split('?')[0];
 
+    // A real dev server answers the browser's automatic favicon probe (Vite/Astro 204 it); without
+    // this the FIRST navigation to a fresh origin logs a spurious favicon 404 console error that is
+    // a harness artifact, not a seeded bug. (Chrome caches the favicon result per-origin, so only a
+    // session's first nav ever sees it — which is exactly the fresh-verify case.)
+    if (url === '/favicon.ico') { res.writeHead(204); return res.end(); }
     if (url === '/api/500') { res.writeHead(500, { 'content-type': 'text/plain' }); return res.end('boom 500'); }
     if (url === '/api/ok') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"ok":true}'); }
     if (url === '/api/hang') { hanging.add(res); res.socket?.unref?.(); return; /* never responds */ }

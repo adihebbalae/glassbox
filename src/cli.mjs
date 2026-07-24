@@ -5,29 +5,19 @@
 // playwright-free (only the daemon imports it) so cold CLI startup is fast.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import {
-  PATHS, daemonReq, pingDaemon, probeDaemon,
+  PATHS, daemonReq, pingDaemon, readDaemonFile, ensureDaemon as ensureDaemonShared,
 } from './protocol.mjs';
 import {
   verifyGlassboxPid, processAlive, taskkillTree, listGlassboxChromium, sweepOrphans,
 } from './daemon/prockit.mjs';
 
-const DAEMON_ENTRY = fileURLToPath(new URL('./daemon/daemon.mjs', import.meta.url));
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 let JSON_MODE = false;
 
 // Thrown by fail() to unwind to main(). We set process.exitCode and let the loop drain rather
 // than calling process.exit() mid-fetch (see the connection:close note in protocol.mjs).
 class ExitSignal extends Error {}
-
-function readDaemonFile() {
-  try {
-    return JSON.parse(fs.readFileSync(PATHS.daemonFile, 'utf8'));
-  } catch {
-    return null;
-  }
-}
 
 function out(obj, human) {
   if (JSON_MODE) console.log(JSON.stringify(obj));
@@ -45,17 +35,14 @@ function fail(error) {
   throw new ExitSignal();
 }
 
+// Thin wrapper over the shared auto-start helper: on failure, unwind through fail() (CLI ergonomics)
+// instead of letting the structured throw escape to the generic INTERNAL handler.
 async function ensureDaemon() {
-  const existing = readDaemonFile();
-  if (existing && (await pingDaemon(existing))) return existing; // fast path
-  spawn(process.execPath, [DAEMON_ENTRY], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    await delay(200);
-    const d = readDaemonFile();
-    if (d && (await pingDaemon(d)) && (await probeDaemon(d))) return d;
+  try {
+    return await ensureDaemonShared();
+  } catch (e) {
+    fail(e.gb || { code: 'DAEMON_UNREACHABLE', message: e?.message || 'daemon unreachable' });
   }
-  fail({ code: 'DAEMON_UNREACHABLE', message: 'daemon did not become live within 15s' });
 }
 
 // ---- verbs ----------------------------------------------------------------
@@ -210,6 +197,18 @@ function buildBody(verb, pos, opts) {
     case 'drag': return { from: { selector: opts.from }, to: { selector: opts.to }, ...timeout };
     case 'upload': return { ...t, files: (opts.files || '').split(',').filter(Boolean), ...timeout };
     case 'select': return { ...t, values: (opts.values || '').split(',').filter(Boolean), ...timeout };
+    case 'settle': return {};
+    case 'eval': return { expression: pos[1] || opts.expression || '', ...(opts.awaitPromise ? { awaitPromise: true } : {}) };
+    case 'screenshot': return { ...(opts.fullPage ? { fullPage: true } : {}), ...(opts.selector ? { selector: opts.selector } : {}), ...(opts.theme ? { theme: opts.theme } : {}) };
+    case 'wait': {
+      const f = {};
+      if (opts.selector) f.selector = opts.selector;
+      else if (opts.text) f.text = opts.text;
+      else if (opts.url) f.url = opts.url;
+      else if (opts.hydration) f.hydration = true;
+      else if (opts.sleep) f.timeout = Number(opts.sleep);
+      return { for: f, ...(opts.timeoutMs ? { timeoutMs: Number(opts.timeoutMs) } : {}) };
+    }
     default: return { ...t, ...timeout }; // click, dblclick, hover
   }
 }
@@ -252,6 +251,15 @@ function printResult(verb, r) {
     if (!r.entries?.length) console.log('(none)');
     return;
   }
+  if (verb === 'settle') { console.log(`settle — ${r.settled ? 'settled' : `UNSETTLED (${(r.why || []).join(',')})`}`); return; }
+  if (verb === 'eval') {
+    if (r.threw) console.log(`threw: ${r.error}`);
+    else console.log(`${r.value !== undefined ? JSON.stringify(r.value) : r.preview}  (${r.type})`);
+    for (const c of r.console || []) console.log(`  ${c.kind}: ${c.text}`);
+    return;
+  }
+  if (verb === 'screenshot') { console.log(`screenshot -> ${r.path}  (${r.bytes} bytes, ${r.w}x${r.h})`); return; }
+  if (verb === 'wait') { console.log(`wait — ${r.matched ? 'MATCHED' : 'timed out (matched:false)'} in ${r.tookMs}ms`); return; }
   const bits = [r.settled ? 'settled' : `UNSETTLED(${(r.settleWhy || []).join(',')})`, `${r.mutations} mut`];
   if (r.urlChanged) bits.push(`url→ ${r.url}`);
   if (r.console?.length) bits.push(`${r.console.length} console`);
@@ -370,7 +378,29 @@ async function runVerb(verb, pos, opts) {
   printResult(verb, resp);
 }
 
-const VERBS = new Set(['goto', 'click', 'dblclick', 'hover', 'type', 'press', 'scroll', 'observe', 'verify', 'read', 'dialog', 'drag', 'upload', 'select']);
+const VERBS = new Set(['goto', 'click', 'dblclick', 'hover', 'type', 'press', 'scroll', 'observe', 'verify', 'read', 'dialog', 'drag', 'upload', 'select', 'settle', 'eval', 'screenshot', 'wait']);
+
+// ---- M5 artifacts (GET) + mcp shim ----------------------------------------
+
+async function runArtifacts(opts) {
+  const session = opts.session || process.env.GLASSBOX_SESSION;
+  if (!session) fail({ code: 'BAD_REQUEST', message: 'session required', correction_hint: 'pass -s <session> or set GLASSBOX_SESSION' });
+  const d = await ensureDaemon();
+  const { status, body } = await daemonReq(d, 'GET', `/sessions/${encodeURIComponent(session)}/artifacts`);
+  if (status !== 200) return fail(body.error);
+  if (JSON_MODE) return out(body);
+  console.log(`artifacts for '${session}'  (${body.dir})`);
+  for (const kind of ['shots', 'reports', 'net', 'journal']) {
+    const files = body.artifacts?.[kind] || [];
+    console.log(`  ${kind}: ${files.length} file(s)`);
+    for (const f of files.slice(0, 10)) console.log(`    ${f.rel}\t${f.bytes}b`);
+  }
+}
+
+async function runMcp() {
+  const { runShim } = await import('./mcp-shim.mjs');
+  runShim(); // takes over stdin/stdout — becomes the MCP server for its lifetime
+}
 
 // ---- arg parsing ----------------------------------------------------------
 
@@ -385,6 +415,8 @@ const VALUE_FLAGS = {
   // M4 debug/style
   '--file': 'file', '--line': 'line', '--condition': 'condition', '--url-regex': 'urlRegex',
   '--frame': 'frame', '--expression': 'expression', '--mode': 'mode', '--breakpoint': 'breakpointId',
+  // M5 eval/screenshot/wait
+  '--theme': 'theme', '--sleep': 'sleep',
 };
 
 function parseArgs(argv) {
@@ -400,6 +432,9 @@ function parseArgs(argv) {
     else if (a === '--viewports') opts.viewports = true;
     else if (a === '--no-axe') opts.noAxe = true;
     else if (a === '--no-shots') opts.noShots = true;
+    else if (a === '--full') opts.fullPage = true;
+    else if (a === '--hydration') opts.hydration = true;
+    else if (a === '--await') opts.awaitPromise = true;
     else if (a === '--viewport') {
       const m = /^(\d+)x(\d+)$/.exec(argv[++i] || '');
       if (!m) fail({ code: 'BAD_REQUEST', message: 'bad --viewport, expected WxH e.g. 1280x800' });
@@ -410,36 +445,41 @@ function parseArgs(argv) {
   return { pos, opts };
 }
 
-const HELP = `glassbox <command>
+const HELP = `glassbox <command>   ·   CLI = MCP tools = same daemon. [--json] on any command for machine output.
 
+SESSIONS
   daemon start|stop|status
   session open <name> [--headed] [--viewport WxH] [--color light|dark] [--theme-attr ATTR] [--base-url URL]
-  session ls
-  session rm <name>
-  watch [session]        (opens a live screencast + takeover page; no arg = session grid)
-  kill-all
+  session ls                  session rm <name>
+  artifacts -s <session>      (list on-disk shots/reports/net/journal)
+  kill-all                    (reap the daemon + every glassbox chromium)
+  mcp                         (run the stdio MCP server — put this in .mcp.json)
 
-  act/observe (all take -s <session> or GLASSBOX_SESSION):
-    goto <url>
-    observe [--selector CSS] [--limit N] [--cursor N]
-    click|dblclick|hover <css> | --ref eN | --testid ID | --role R [--name N] | --selector CSS | --text T
-    type <text> --selector CSS [--submit]        press <key> [--selector CSS]
-    scroll [--to top|bottom|CSS|eN] [--by PX]     dialog accept|dismiss [--text T]
-    drag --from CSS --to CSS    upload --selector CSS --files a,b    select --selector CSS --values x,y
+NAVIGATE + ACT   (all take -s <session> or GLASSBOX_SESSION)
+  goto <url>
+  click|dblclick|hover <css> | --ref eN | --testid ID | --role R [--name N] | --selector CSS | --text T
+  type <text> --selector CSS [--submit]        press <key> [--selector CSS]
+  scroll [--to top|bottom|CSS|eN] [--by PX]     dialog accept|dismiss [--text T]
+  drag --from CSS --to CSS     upload --selector CSS --files a,b     select --selector CSS --values x,y
+  eval "<expr>" [--await]      wait [--selector CSS | --text T | --url U | --hydration | --sleep MS] [--timeout MS]
 
-  verify/read:
-    verify [--scope CSS] [--themes] [--viewports] [--no-axe] [--no-shots]
-    read [console|network|errors|overlay] [--since N] [--limit N]
+OBSERVE + VERIFY
+  observe [--selector CSS] [--limit N] [--cursor N]
+  verify [--scope CSS] [--themes] [--viewports] [--no-axe] [--no-shots]
+  read [console|network|errors|overlay] [--since N] [--limit N]
+  screenshot|shot [--full] [--selector CSS] [--theme light|dark]     (writes a path; never inline)
+  settle                       (block until the page quiesces)
 
-  debug (white-box; -s <session>):
-    debug break --file app.js --line N [--condition EXPR] | --url-regex RE --line N
-    debug state | inspect [--frame N] | eval "<expr>" [--frame N]
-    debug step [over|into|out] | resume | pause | screenshot
-    debug listeners <css> | --ref eN         debug list | remove <bpId> | remove --all
-    debug coverage-start … coverage-stop
-    style <css> | --ref eN                    (why-does-this-look-wrong: cascade + contrast)
+DEBUG   (white-box; -s <session>)
+  debug break --file app.js --line N [--condition EXPR] | --url-regex RE --line N
+  debug state | inspect [--frame N] | eval "<expr>" [--frame N]
+  debug step [over|into|out] | resume | pause | screenshot
+  debug listeners <css> | --ref eN            debug list | remove <bpId> | remove --all
+  debug coverage-start … coverage-stop
+  style <css> | --ref eN                       (why-does-this-look-wrong: cascade + contrast)
 
-  [--json] on any command for machine-readable output`;
+WATCH
+  watch [session]              (live screencast + takeover page; no arg = session grid)`;
 
 async function main() {
   try {
@@ -453,8 +493,11 @@ async function main() {
     if (verb === 'session' && (sub === 'rm' || sub === 'close')) return await sessionRm(arg);
     if (verb === 'kill-all') return await killAll();
     if (verb === 'watch') return await watch(sub);
+    if (verb === 'mcp') return await runMcp();
+    if (verb === 'artifacts') return await runArtifacts(opts);
     if (verb === 'debug') return await runDebug(pos, opts);
     if (verb === 'style') return await runStyle(pos, opts);
+    if (verb === 'shot') return await runVerb('screenshot', pos, opts); // alias
     if (VERBS.has(verb)) return await runVerb(verb, pos, opts);
     console.log(HELP);
     process.exitCode = verb ? 1 : 0;

@@ -9,6 +9,7 @@
 import { CODES, gbErr } from '../protocol.mjs';
 import { observe } from './observe.mjs';
 import { verify, read } from './verify.mjs';
+import { evalExpression, screenshotAction, waitFor } from './extras.mjs';
 import { settle, ensureObserver, readMut, isDirty } from './settle.mjs';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -238,6 +239,11 @@ export async function handleAction(mgr, name, verb, body = {}) {
   if (verb === 'read') return mgr.runQueued(s, () => read(s, body));
   if (verb === 'dialog') return mgr.runQueued(s, () => respondDialog(s, body));
   if (verb === 'settle') return mgr.runQueued(s, async () => ({ ok: true, ...(await settle(s, body)) }));
+  // M5 additions — all through the serial queue (so they interleave-safely with actions) and all
+  // already refused above while paused.
+  if (verb === 'eval') return mgr.runQueued(s, () => evalExpression(s, body));
+  if (verb === 'screenshot') return mgr.runQueued(s, () => screenshotAction(s, body));
+  if (verb === 'wait') return mgr.runQueued(s, () => waitFor(s, body));
   if (ALL_VERBS.has(verb)) return mgr.runQueued(s, () => runOne(s, verb, body));
-  throw gbErr(CODES.BAD_REQUEST, `unknown action '${verb}'`, { field: 'verb', valid_values: [...ALL_VERBS, 'observe', 'verify', 'read', 'dialog'] });
+  throw gbErr(CODES.BAD_REQUEST, `unknown action '${verb}'`, { field: 'verb', valid_values: [...ALL_VERBS, 'observe', 'verify', 'read', 'dialog', 'settle', 'eval', 'screenshot', 'wait'] });
 }
