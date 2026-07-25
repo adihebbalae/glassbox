@@ -321,23 +321,41 @@ async function resolveObjectId(s, body) {
     const r = await cdp.send('DOM.resolveNode', { backendNodeId: reg.backendNodeId }).catch(() => null);
     const oid = r && r.object && r.object.objectId;
     if (!oid) throw gbErr(CODES.STALE_REF, `ref '${body.ref}' no longer resolves`, { field: 'ref', correction_hint: 're-observe' });
-    return oid;
+    return { objectId: oid, matchCount: 1 };
   }
   const selector = body.selector;
   if (!selector) throw gbErr(CODES.NO_TARGET, 'listeners needs `selector` or `ref`', { field: 'selector' });
   const { result } = await cdp.send('Runtime.evaluate', { expression: `document.querySelector(${JSON.stringify(selector)})`, returnByValue: false });
   if (!result || !result.objectId) throw gbErr(CODES.NO_TARGET, `selector '${selector}' matched nothing`, { field: 'selector', correction_hint: 'check the selector' });
-  return result.objectId;
+  // How many nodes did that selector actually match? A bare `button` lands on the FIRST one in
+  // the DOM — often a hidden mobile hamburger, not the button anyone meant (defect D6).
+  let matchCount = 1;
+  try {
+    const c = await cdp.send('Runtime.evaluate', { expression: `document.querySelectorAll(${JSON.stringify(selector)}).length`, returnByValue: true });
+    matchCount = Number(c.result?.value) || 1;
+  } catch { /* keep 1 */ }
+  return { objectId: result.objectId, matchCount };
 }
 
-async function listeners(s, body) {
-  await ensureDebugger(s); // scriptParsed map lets us name each handler's source file
+// Identify the node we actually inspected, in the caller's language: tag/id/classes/text.
+const DESCRIBE_FN = `function(){
+  var el=this, s=el.tagName?el.tagName.toLowerCase():'?';
+  if(el.id) s+='#'+el.id;
+  var c=el.className; if(c&&c.baseVal!==undefined)c=c.baseVal;
+  var cls = (c&&typeof c==='string'&&c.trim())?c.trim().split(/\\s+/).slice(0,3):[];
+  if(cls.length) s+='.'+cls.join('.');
+  var t=(el.innerText||el.textContent||'').replace(/\\s+/g,' ').trim().slice(0,60);
+  var vis=true; try{ vis=el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}); }catch(e){}
+  return { desc:s, tag:el.tagName?el.tagName.toLowerCase():'?', id:el.id||null, classes:cls, text:t, visible:vis };
+}`;
+const PARENT_FN = 'function(){ return this.parentElement; }';
+
+/** Read + shape one node's own listeners (source location remapped through sourcemaps). */
+async function listenersOn(s, objectId, mapper) {
   const { cdp } = s;
-  const objectId = await resolveObjectId(s, body);
-  const mapper = sourceMapper(s);
   let raw = [];
   try { raw = (await cdp.send('DOMDebugger.getEventListeners', { objectId, depth: 1 })).listeners || []; }
-  finally { cdp.send('Runtime.releaseObject', { objectId }).catch(() => {}); }
+  catch { return []; }
   const out = [];
   for (const L of raw) {
     const script = s.debug.scripts.find((sc) => sc.scriptId === L.scriptId);
@@ -355,7 +373,72 @@ async function listeners(s, body) {
     }
     out.push({ type: L.type, once: !!L.once, capture: !!L.useCapture, passive: !!L.passive, source, sourceLoc });
   }
-  return { ok: true, count: out.length, listeners: out };
+  return out;
+}
+
+/**
+ * The dead-button question — answered honestly (defect D6). Three changes over the naive version:
+ *  (1) it ECHOES which element it inspected (tag/id/classes/text) and warns when the selector
+ *      matched N>1 nodes, because a bare `button` silently inspects the first node in the DOM;
+ *  (2) an empty list is no longer reported as "dead": React 17+ attaches every synthetic handler
+ *      at the ROOT CONTAINER, so we walk the ancestors and report the delegated listeners we find
+ *      ("no direct listeners; ancestor #root has delegated click, keydown");
+ *  (3) only with neither direct nor delegated listeners is the verdict actually "dead".
+ */
+async function listeners(s, body) {
+  await ensureDebugger(s); // scriptParsed map lets us name each handler's source file
+  const { cdp } = s;
+  const { objectId, matchCount } = await resolveObjectId(s, body);
+  const mapper = sourceMapper(s);
+  const release = [objectId];
+  let element = null;
+  let out = [];
+  const delegated = [];
+  try {
+    try {
+      const d = await cdp.send('Runtime.callFunctionOn', { objectId, functionDeclaration: DESCRIBE_FN, returnByValue: true });
+      element = d.result?.value || null;
+    } catch { /* describing is a courtesy, never a failure */ }
+    out = await listenersOn(s, objectId, mapper);
+
+    if (out.length === 0) {
+      // Walk element ancestors (never document/window: the framework roots that matter are
+      // elements, and the document carries tooling noise). Nearest first, capped.
+      let cur = objectId;
+      for (let depth = 0; depth < 12 && delegated.length < 3; depth++) {
+        let pid = null;
+        try {
+          const p = await cdp.send('Runtime.callFunctionOn', { objectId: cur, functionDeclaration: PARENT_FN, returnByValue: false });
+          pid = p.result?.objectId || null;
+        } catch { /* fall through */ }
+        if (!pid) break;
+        release.push(pid);
+        const ls = await listenersOn(s, pid, mapper);
+        if (ls.length) {
+          let desc = '(ancestor)';
+          try {
+            const d = await cdp.send('Runtime.callFunctionOn', { objectId: pid, functionDeclaration: DESCRIBE_FN, returnByValue: true });
+            desc = d.result?.value?.desc || desc;
+          } catch { /* keep placeholder */ }
+          delegated.push({ on: desc, depth: depth + 1, types: [...new Set(ls.map((l) => l.type))], listeners: ls.slice(0, 6) });
+        }
+        cur = pid;
+      }
+    }
+  } finally {
+    for (const id of release) cdp.send('Runtime.releaseObject', { objectId: id }).catch(() => {});
+  }
+
+  const res = { ok: true, count: out.length, listeners: out, element, matchCount, delegated };
+  if (matchCount > 1) {
+    res.warning = `selector matched ${matchCount} nodes; inspected the FIRST one (${element?.desc || '?'}${element && element.visible === false ? ', not visible' : ''}) — pass a more specific selector or a ref from gb_observe`;
+  }
+  if (out.length === 0) {
+    res.verdict = delegated.length
+      ? `no direct listeners; ancestor ${delegated[0].on} has delegated ${delegated[0].types.join(', ')} (React 17+ attaches at the root container — the element may still work)`
+      : 'no direct listeners and no delegated listeners on any ancestor (dead element)';
+  }
+  return res;
 }
 
 // ---- dispatch --------------------------------------------------------------

@@ -6,6 +6,7 @@
 // net::ERR_CONNECTION_REFUSED"), never raw dumps. `read` is the cursored, taxonomized sibling for
 // pulling one channel at a time (console|network|errors|overlay), remapped through sourcemaps.
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { CODES, gbErr } from '../protocol.mjs';
 import { settle } from './settle.mjs';
@@ -75,21 +76,47 @@ function dedupAxe(results) {
 
 // ---- sweep application ------------------------------------------------------
 
-async function applyCombo(session, theme, vp) {
+/**
+ * Apply one sweep leg. Three mechanisms, because no one of them tests the others (arch §5):
+ * `emulateMedia` (the OS signal), the site's own `data-theme` attribute, and — new — the site's
+ * own root CLASS (`themeClass`, Tailwind's `darkMode:['class']`, the single most common dark-mode
+ * mechanism in this ecosystem; defect D3).
+ *
+ * And the leg RELOADS (defect D2): a site that reads `prefers-color-scheme` once at module load
+ * and applies a class from it — the DegreeForge/`useTheme` shape — cannot see a runtime emulation
+ * flip at all, so the "dark" screenshot silently came out identical to light. Emulation is set
+ * BEFORE the reload so boot-time readers observe it; the attribute/class are applied AFTER, so
+ * they win over whatever the app's own boot code decided.
+ */
+async function applyCombo(session, theme, vp, opts = {}) {
   const { page } = session;
   if (vp) await page.setViewportSize({ width: vp.w, height: vp.h }).catch(() => {});
   if (theme) {
     await page.emulateMedia({ colorScheme: theme }).catch(() => {});
+    if (opts.reload) {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+      await settle(session, { navigation: true });
+    }
     if (session.themeAttr) await page.evaluate(([a, t]) => document.documentElement.setAttribute(a, t), [session.themeAttr, theme]).catch(() => {});
+    if (session.themeClass) await page.evaluate(([c, on]) => document.documentElement.classList.toggle(c, on), [session.themeClass, theme === 'dark']).catch(() => {});
   }
   await raf(page);
 }
-async function restoreEmulation(session, origVp, origTheme) {
+async function restoreEmulation(session, origVp, origTheme, origClass, reloaded) {
   const { page } = session;
   if (origVp) await page.setViewportSize(origVp).catch(() => {});
   await page.emulateMedia({ colorScheme: session.colorScheme || null }).catch(() => {});
+  // The sweep's reloads left the page booted under the LAST leg's emulation; put it back on the
+  // session's own footing so the next command sees the page the caller thinks it has.
+  if (reloaded) {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+    await settle(session, { navigation: true });
+  }
   if (session.themeAttr) {
     await page.evaluate(([a, t]) => { if (t == null) document.documentElement.removeAttribute(a); else document.documentElement.setAttribute(a, t); }, [session.themeAttr, origTheme]).catch(() => {});
+  }
+  if (session.themeClass) {
+    await page.evaluate(([c, on]) => document.documentElement.classList.toggle(c, on), [session.themeClass, !!origClass]).catch(() => {});
   }
 }
 // Page.captureScreenshot can wait on a compositor frame the page may never produce (a frozen main
@@ -104,8 +131,10 @@ async function shoot(session, n, label) {
     const res = await Promise.race([shot, delay(SHOT_CAP_MS).then(() => null)]);
     if (!res) return null;
     const p = session.journal.alloc('shots', `verify-${n}-${safe(label)}.webp`);
-    fs.writeFileSync(p, Buffer.from(res.data, 'base64'));
-    return p;
+    const buf = Buffer.from(res.data, 'base64');
+    fs.writeFileSync(p, buf);
+    // The hash is what makes "your dark screenshot is the light one" observable at all (D2).
+    return { path: p, hash: crypto.createHash('sha1').update(buf).digest('hex') };
   } catch { return null; }
 }
 
@@ -134,7 +163,8 @@ function layoutFinding(f, combo) {
 
 /**
  * Run the full bundle. `opts`: {scope?, themes?, viewports?(bool|[{w,h,label}]), axe?=true,
- * screenshots?=true}. Returns the compact report; full detail is written to reports/verify-<n>.json.
+ * screenshots?=true, themeReload?=true}. Returns the compact report; full detail is written to
+ * reports/verify-<n>.json.
  */
 export async function verify(session, opts = {}) {
   const t0 = Date.now();
@@ -173,30 +203,58 @@ export async function verify(session, opts = {}) {
   // sweeps: theme × viewport. Combo-specific layout findings (not already seen at baseline) are
   // added tagged with the combo; each combo produces one screenshot.
   const shots = [];
+  const shotIndex = []; // {theme, vp, hash, path} — feeds the identical-across-themes check
   const comboFindings = [];
   const vpList = opts.viewports === true ? DEFAULT_VIEWPORTS : Array.isArray(opts.viewports) ? opts.viewports : null;
   const thList = opts.themes ? ['light', 'dark'] : null;
   const doSweep = !!(vpList || thList);
   const seen = new Set(baseFindings.map((f) => f.type + '|' + f.desc));
+  // Reload per theme leg by default (D2); `themeReload:false` opts out for a page whose in-page
+  // state (a filled form, an opened panel) must survive the sweep.
+  const themeReload = opts.themeReload !== false;
 
   if (doSweep) {
     const origVp = page.viewportSize();
     const origTheme = session.themeAttr ? await page.evaluate((a) => document.documentElement.getAttribute(a), session.themeAttr).catch(() => null) : null;
+    const origClass = session.themeClass ? await page.evaluate((c) => document.documentElement.classList.contains(c), session.themeClass).catch(() => false) : false;
     const vps = vpList || [null];
     const ths = thList || [null];
     for (const th of ths) {
       for (const vp of vps) {
-        const label = `${th || 'theme'}-${vp ? vp.label : 'vp'}`;
-        await applyCombo(session, th, vp);
-        if (wantShots) { const p = await shoot(session, n, label); if (p) shots.push(p); }
+        // Named by the AXIS ACTUALLY SWEPT (defect D9): 'dark', 'vp-mobile', 'dark-vp-mobile' —
+        // never 'theme-mobile' for a viewport-only run, and collision-free when both axes run.
+        const label = [th || null, vp ? `vp-${vp.label}` : null].filter(Boolean).join('-');
+        await applyCombo(session, th, vp, { reload: themeReload });
+        if (wantShots) {
+          const s = await shoot(session, n, label);
+          if (s) { shots.push(s.path); shotIndex.push({ theme: th, vp: vp ? vp.label : null, hash: s.hash, path: s.path }); }
+        }
         const cl = flattenLayout(await runLayout(page, scope), COMBO_CATS);
         for (const f of cl) { const k = f.type + '|' + f.desc; if (!seen.has(k)) { seen.add(k); comboFindings.push(layoutFinding(f, label)); } }
       }
     }
-    await restoreEmulation(session, origVp, origTheme);
+    await restoreEmulation(session, origVp, origTheme, origClass, !!(thList && themeReload));
   } else if (wantShots) {
-    const p = await shoot(session, n, 'baseline');
-    if (p) shots.push(p);
+    const s = await shoot(session, n, 'baseline');
+    if (s) shots.push(s.path);
+  }
+
+  // Identical light/dark output is itself a finding (D2): either the site has no dark mode, or the
+  // sweep never reached the mechanism it uses — both are things the reviewer must be told, because
+  // the alternative is false confidence from an artifact that is silently the wrong theme.
+  const themeFindings = [];
+  if (thList && shotIndex.length >= 2) {
+    for (const vpLabel of [...new Set(shotIndex.map((s) => s.vp))]) {
+      const light = shotIndex.find((s) => s.theme === 'light' && s.vp === vpLabel);
+      const dark = shotIndex.find((s) => s.theme === 'dark' && s.vp === vpLabel);
+      if (light && dark && light.hash === dark.hash) {
+        themeFindings.push({
+          channel: 'theme', severity: 'warn',
+          summary: `Light and dark screenshots are byte-identical${vpLabel ? ` at ${vpLabel}` : ''} — the theme sweep changed nothing on screen`,
+          detail: `the page may have no dark styles at all, or its theme mechanism was not reached: set the session's themeAttr (data-theme) or themeClass (Tailwind's 'dark') so the sweep can drive it. Shots: ${light.path} == ${dark.path}`,
+        });
+      }
+    }
   }
 
   // ---- assemble findings ----
@@ -210,11 +268,24 @@ export async function verify(session, opts = {}) {
   if (overlay) findings.push({ channel: 'overlay', severity: 'error', summary: `Build error (${overlay.framework}): ${String(overlay.message).slice(0, 200)}`, detail: [overlay.file, overlay.frame].filter(Boolean).join('\n').slice(0, 800) });
   for (const f of baseFindings) findings.push(layoutFinding(f));
   for (const f of comboFindings) findings.push(f);
+  for (const f of themeFindings) findings.push(f);
+  // ONE info line for a whole modal's worth of intentionally-buried controls (defect D4).
+  if (baseLayout?.modal?.behind > 0) {
+    findings.push({
+      channel: 'layout', severity: 'info',
+      summary: `Modal open (${baseLayout.modal.desc}); ${baseLayout.modal.behind} interactive element${baseLayout.modal.behind > 1 ? 's are' : ' is'} behind its backdrop`,
+      detail: 'expected while a dialog is open — occlusion warnings for those elements are suppressed, not lost',
+    });
+  }
   for (const g of axeGroups) findings.push({ channel: 'a11y', severity: g.impact === 'critical' || g.impact === 'serious' ? 'warn' : 'info', summary: `${g.help} (${g.count}×): ${g.sample}`, selector: g.sample, detail: `rule ${g.ruleId} (${g.impact})` });
 
   findings.sort((a, b) => (RANK[a.severity] ?? 3) - (RANK[b.severity] ?? 3));
 
   const layoutCount = baseFindings.length + comboFindings.length;
+  // `consoleErrors` is exactly that — console.error entries SINCE THE LAST NAVIGATION (the nav
+  // mark), not the whole buffer and not every log level. `gb_read {channel:'console'}` is the
+  // unfiltered view. (Named for the dogfood observation: a field called `console` invited the
+  // reading "all console output", which it never was.)
   const counts = {
     consoleErrors: consoleErrs.length, pageErrors: pageErrs.length,
     netFailed: net.failed.length, netHttpError: net.httpError.length, netHanging: net.hanging.length, netMixed: net.mixedContent.length,
@@ -235,7 +306,8 @@ export async function verify(session, opts = {}) {
     ok, settled: settleRes.settled, settleWhy: settleRes.why, url: page.url(), counts,
     findings, // uncapped on disk
     errors: { console: consoleErrs, page: pageErrs },
-    network: net, layout: baseLayout, sweep: comboFindings, overlay, a11y: axeGroups,
+    network: net, layout: baseLayout, sweep: comboFindings, theme: themeFindings,
+    modal: baseLayout?.modal || null, overlay, a11y: axeGroups,
     artifacts: { screenshots: shots, axe: axePath, netlog: netlogPath }, tookMs: 0,
   };
   full.tookMs = Date.now() - t0;

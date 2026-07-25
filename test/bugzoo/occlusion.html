@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — occlusion</title>
+<style>
+  body { margin: 0; font-family: sans-serif; color: #111; background: #fff; height: 2400px; }
+  /* The DegreeForge shape: a fixed legend panel parked over a control panel in the corner.
+     At the CURRENT scroll position a real pointer aimed at #zoomin's centre hits the legend —
+     but the button also runs past the fold, so a scroll-into-view moves it out from under the
+     legend, which is exactly how a naive click can "succeed" on a control nobody can reach. */
+  #legend { position: fixed; left: 0; bottom: 0; width: 320px; height: 140px; background: #e8ecff;
+            border: 1px solid #8899ff; z-index: 50; pointer-events: auto; padding: 8px; box-sizing: border-box; }
+  #zoomin { position: absolute; left: 24px; top: 660px; width: 180px; height: 64px; }
+  #free   { position: absolute; left: 420px; top: 200px; width: 180px; height: 40px; }
+</style>
+</head>
+<body>
+<div id="legend">Legend panel — sits on top of the map controls</div>
+
+<h1 style="margin:16px">Occlusion page</h1>
+<p style="margin:16px">A control buried under a fixed legend, and a clear control as the control group.</p>
+
+<button id="zoomin">Zoom in</button>
+<button id="free">Free button</button>
+
+<script>
+  window.__clicks = [];
+  for (const id of ['zoomin', 'free']) {
+    document.getElementById(id).addEventListener('click', function () {
+      window.__clicks.push(id);
+      document.title = 'clicked:' + window.__clicks.join(',');
+    });
+  }
+</script>
+</body>
+</html>

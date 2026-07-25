@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — modal</title>
+<style>
+  body { font-family: sans-serif; color: #111111; background: #ffffff; margin: 0; }
+  nav { display: flex; gap: 12px; padding: 16px; }
+  nav a, nav button { color: #111111; background: #eeeeee; border: 1px solid #888888; padding: 10px 14px; min-height: 44px; }
+  /* The Radix/shadcn shape: a portal holding a full-screen backdrop and, as its SIBLING, the
+     dialog itself. Everything in the page behind the backdrop is intentionally unreachable —
+     that is what a modal IS, and flagging each buried control drowns the real findings. */
+  #backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 100; pointer-events: auto; }
+  #dialog { position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%); z-index: 110;
+            background: #ffffff; color: #111111; border: 1px solid #888888; padding: 20px; min-width: 320px; }
+  #dialog button { color: #111111; background: #eeeeee; border: 1px solid #888888; padding: 10px 14px; min-height: 44px; }
+</style>
+</head>
+<body>
+<nav>
+  <a href="/clean.html">Home</a>
+  <a href="/layout.html">Layout</a>
+  <a href="/dark.html">Dark</a>
+  <a href="/debug.html">Debug</a>
+  <button id="nav1" type="button">Search</button>
+  <button id="nav2" type="button">Profile</button>
+  <button id="nav3" type="button">Settings</button>
+  <button id="nav4" type="button">Help</button>
+</nav>
+<main style="padding:16px">
+  <h1>Modal page</h1>
+  <p>A dialog is open; every control above is behind its backdrop, by design.</p>
+</main>
+
+<div id="portal">
+  <div id="backdrop"></div>
+  <div id="dialog" role="dialog" aria-modal="true" aria-label="Confirm">
+    <h2>Confirm</h2>
+    <p>Really do the thing?</p>
+    <button id="ok" type="button">OK</button>
+    <button id="cancel" type="button">Cancel</button>
+  </div>
+</div>
+</body>
+</html>

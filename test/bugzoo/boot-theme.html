@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — boot theme</title>
+<style>
+  body { background: #ffffff; color: #111111; font-family: sans-serif; margin: 16px; }
+  #note { color: #111111; background: #ffffff; padding: 8px; }
+  /* seed: dark-only contrast bug reachable ONLY through the boot-time class. There is NO
+     `prefers-color-scheme` media query anywhere on this page, so flipping emulateMedia at
+     runtime changes nothing — the theme is decided once, at module load (the DegreeForge
+     `useTheme.ts` shape, and the most common React pattern). A sweep that does not RELOAD
+     the page per theme leg silently produces two identical light screenshots. */
+  html.dark body { background: #ffffff; color: #ffffff; }
+  html.dark #note { color: #ffffff; background: #ffffff; }
+</style>
+<script>
+  // Runs ONCE, at parse time — exactly like a bundled `useTheme` module read.
+  (function () {
+    var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    window.__gbxBootTheme = dark ? 'dark' : 'light';
+    if (dark) document.documentElement.classList.add('dark');
+  })();
+</script>
+</head>
+<body>
+<main>
+<h1>Boot-theme page</h1>
+<p id="note">Readable in light mode; white-on-white once the boot-time dark class is applied.</p>
+</main>
+</body>
+</html>

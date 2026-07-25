@@ -8,6 +8,10 @@
 // occluder is reported), invisible-but-laid-out interactive (Element.checkVisibility, narrowed to
 // elements that still occupy a box — display:none is deliberate, see the sweep below),
 // zero-size interactive targets, broken images (complete && naturalWidth===0), text contrast
+// NOISE DISCIPLINE (defect round 1): an open modal's backdrop covers everything behind it BY
+// DESIGN — those are counted once (`modal:{desc,behind}`), never warned about one by one; and
+// interactive elements hidden by an ANCESTOR (visibility:hidden, Tailwind `.invisible`) are
+// grouped into a single finding naming that ancestor.
 // (effective fg composited over the effective bg walk, WCAG relative-luminance ratio < threshold),
 // and CLS (buffered layout-shift entries, hadRecentInput filtered, with moved-node descriptions).
 // Each category capped; the overflow count kept in `truncated`.
@@ -20,17 +24,15 @@ export function layoutAuditSource(cfg = {}) {
   const cap = CFG.cap;
   const docEl = document.documentElement;
   const root = CFG.scope ? (document.querySelector(CFG.scope) || document) : document;
-  const out = { overflow:[], occlusion:[], invisible:[], zeroSize:[], brokenImages:[], contrast:[], cls:[], truncated:{} };
+  const out = { overflow:[], occlusion:[], invisible:[], zeroSize:[], brokenImages:[], contrast:[], cls:[], truncated:{}, modal:null };
   const SEL = 'a,button,input,select,textarea,[onclick],[role],[tabindex]';
 
   const describe = (el) => {
     if (!el || !el.tagName) return '?';
     let s = el.tagName.toLowerCase();
-    if (el.id) s += '#' + el.id;
-    else {
-      let c = el.className; if (c && c.baseVal !== undefined) c = c.baseVal;
-      if (c && typeof c === 'string' && c.trim()) s += '.' + c.trim().split(/\\s+/).slice(0, 2).join('.');
-    }
+    if (el.id) return (s + '#' + el.id).slice(0, 90); // an id is already unique — no nth-of-type noise
+    let c = el.className; if (c && c.baseVal !== undefined) c = c.baseVal;
+    if (c && typeof c === 'string' && c.trim()) s += '.' + c.trim().split(/\\s+/).slice(0, 2).join('.');
     const p = el.parentElement;
     if (p) { const same = Array.from(p.children).filter((x) => x.tagName === el.tagName); if (same.length > 1) s += ':nth-of-type(' + (same.indexOf(el) + 1) + ')'; }
     return s.slice(0, 90);
@@ -57,6 +59,19 @@ export function layoutAuditSource(cfg = {}) {
     }
   }
 
+  // --- open-modal detection (defect D4) --------------------------------------
+  // A modal makes everything behind it unreachable ON PURPOSE. A Radix/shadcn dialog renders a
+  // full-screen backdrop as the dialog's SIBLING, so every nav link behind it hit-tests to that
+  // backdrop: ten "occluded interactive element" warnings that bury the one real occlusion on the
+  // page. If a modal is open, the elements outside it are counted, not warned about, one line.
+  let modalEl = null;
+  for (const c of document.querySelectorAll('[aria-modal="true"],[role="dialog"],[role="alertdialog"],dialog[open]')) {
+    if (!visible(c)) continue;
+    const cr = c.getBoundingClientRect();
+    if (cr.width >= 1 && cr.height >= 1) { modalEl = c; break; }
+  }
+  if (modalEl) out.modal = { desc: describe(modalEl), behind: 0 };
+
   // --- interactive sweep: occlusion / invisible / zero-size ------------------
   // \`display:none\` (on the element or an ancestor) is the STANDARD way to hide a responsive
   // alternate, a closed menu, or a dialog — it collapses the box to 0×0, is unfocusable, and is
@@ -65,15 +80,39 @@ export function layoutAuditSource(cfg = {}) {
   // is narrowed to what is genuinely a bug: an element that STILL OCCUPIES LAYOUT yet cannot be
   // seen (visibility:hidden / opacity:0 / content-visibility) — the invisible-overlay-button and
   // forgot-to-fade-back-in cases. Zero-size is likewise only asserted for elements that ARE visible.
+  // A hidden ANCESTOR (Tailwind's \`.invisible\` on a closed drawer) is likewise ONE fact about ONE
+  // element, not one warning per descendant button (defect D5) — so descendants hidden by an
+  // ancestor are grouped under the ancestor that actually hides them, and only an element hidden
+  // BY ITSELF is reported on its own.
+  const invisGroups = new Map();
   for (const el of root.querySelectorAll(SEL)) {
     const r = el.getBoundingClientRect();
     const occupies = r.width >= 1 && r.height >= 1;
     if (!visible(el)) {
       if (occupies) {
         const cs0 = getComputedStyle(el);
-        const why = cs0.visibility !== 'visible' ? 'visibility:' + cs0.visibility
-          : (parseFloat(cs0.opacity) === 0 ? 'opacity:0' : 'content-visibility');
-        cappedPush(out.invisible, 'invisible', { type:'invisible', desc:describe(el), detail:'takes up ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px of layout but cannot be seen (' + why + ')' });
+        let why, src = el;
+        if (cs0.visibility !== 'visible') {
+          why = 'visibility:' + cs0.visibility;
+          // visibility is INHERITED: walk up to the OUTERMOST element still carrying it — that is
+          // the drawer/panel the author actually hid, and the only name worth printing.
+          let n = el;
+          while (n.parentElement && getComputedStyle(n.parentElement).visibility === cs0.visibility) n = n.parentElement;
+          src = n;
+        } else if (parseFloat(cs0.opacity) === 0) {
+          why = 'opacity:0';
+          let n = el;
+          while (n && parseFloat(getComputedStyle(n).opacity) !== 0) n = n.parentElement;
+          src = n || el;
+        } else { why = 'content-visibility'; src = el; }
+        if (src === el) {
+          cappedPush(out.invisible, 'invisible', { type:'invisible', desc:describe(el), detail:'takes up ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px of layout but cannot be seen (' + why + ')' });
+        } else {
+          const g = invisGroups.get(src) || { desc: describe(src), why, count: 0, samples: [] };
+          g.count += 1;
+          if (g.samples.length < 3) g.samples.push(describe(el));
+          invisGroups.set(src, g);
+        }
       }
       continue;
     }
@@ -82,8 +121,13 @@ export function layoutAuditSource(cfg = {}) {
     if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) continue;
     let hit; try { hit = document.elementFromPoint(cx, cy); } catch(e) { hit = null; }
     if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) {
+      if (modalEl && !modalEl.contains(el)) { out.modal.behind += 1; continue; } // intended: it is behind the backdrop
       cappedPush(out.occlusion, 'occlusion', { type:'occlusion', desc:describe(el), detail:'covered at its center by ' + describe(hit) });
     }
+  }
+  for (const g of invisGroups.values()) {
+    cappedPush(out.invisible, 'invisible', { type:'invisible', desc:g.desc, count:g.count,
+      detail:'hides ' + g.count + ' interactive descendant' + (g.count > 1 ? 's' : '') + ' (' + g.why + ' on this ancestor: ' + g.samples.join(', ') + (g.count > g.samples.length ? ', …' : '') + ') — they occupy layout but cannot be seen or clicked' });
   }
 
   // --- broken images ---------------------------------------------------------

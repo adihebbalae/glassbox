@@ -54,16 +54,17 @@ const sessionArg = S.string('The session name from gb_session open. Every gb_* t
 const TOOLS = [
   {
     name: 'gb_session',
-    description: 'Open/list/close/inspect an isolated browser session. Open ONE per task with your task name (parallel agents = parallel sessions, never shared). op:open returns session info, a human-watchable URL, and the reminder that every other gb_* tool needs `session`. Artifacts (screenshots, verify reports, network logs, journal) land under a per-session dir on disk.',
+    description: 'Open/list/close/inspect/resize an isolated browser session. Open ONE per task with your task name (parallel agents = parallel sessions, never shared). op:open returns session info, a human-watchable URL, and the reminder that every other gb_* tool needs `session`. op:resize changes an EXISTING session\'s viewport (mobile checks without re-opening and re-seeding state). Artifacts (screenshots, verify reports, network logs, journal) land under a per-session dir on disk.',
     inputSchema: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['open', 'list', 'close', 'info'], description: 'open a new session | list all | close one | info on one' },
-        name: S.string('session name (required for open/close/info); 1-64 chars of [A-Za-z0-9._-]'),
+        op: { type: 'string', enum: ['open', 'list', 'close', 'info', 'resize'], description: 'open a new session | list all | close one | info on one | resize one (needs viewport)' },
+        name: S.string('session name (required for open/close/info/resize); 1-64 chars of [A-Za-z0-9._-]'),
         headed: S.bool('open a visible window (default false/headless) — use for hover/tooltip/GPU-sensitive checks'),
-        viewport: { type: 'object', description: '{width,height} in CSS px', properties: { width: S.int(''), height: S.int('') } },
+        viewport: { type: 'object', description: '{width,height} in CSS px (op:open initial size, or op:resize target size)', properties: { width: S.int(''), height: S.int('') } },
         colorScheme: { type: 'string', enum: ['light', 'dark'], description: 'initial prefers-color-scheme' },
-        themeAttr: S.string("the site's own theme attribute on <html> (e.g. 'data-theme') so verify can sweep it alongside emulateMedia"),
+        themeAttr: S.string("the site's own theme ATTRIBUTE on <html> (e.g. 'data-theme') so verify can sweep it alongside emulateMedia"),
+        themeClass: S.string("the site's own theme CLASS on <html> (e.g. 'dark' for Tailwind darkMode:['class']) so verify can sweep it"),
         baseUrl: S.string('base URL so gb_goto can take relative paths'),
       },
       required: ['op'],
@@ -76,7 +77,7 @@ const TOOLS = [
   },
   {
     name: 'gb_act',
-    description: "Perform one UI action; `action` discriminates. Target the element by ANY of: selector (CSS — prefer this, you wrote the markup), testid, role+name, text, or ref (from gb_observe). Returns a delta (url change, console, mutations, settled) — NOT a full page dump. For type/select pass `value`; press pass `key`; scroll pass `to`/`by`; drag pass selector (from) + `to` (destination selector); upload pass `files`.",
+    description: "Perform one UI action; `action` discriminates. Target the element by ANY of: selector (CSS — prefer this, you wrote the markup), testid, role+name, text, or ref (from gb_observe). Returns a delta (url change, console, mutations, settled) — NOT a full page dump. For type/select pass `value`; press pass `key`; scroll pass `to`/`by`; drag pass selector (from) + `to` (destination selector); upload pass `files`. A click whose target is COVERED at its hit point fails with ACT_OCCLUDED naming the covering element (a real pointer could not reach it) — pass force:true to do it anyway; the delta then carries forced:true.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -94,6 +95,7 @@ const TOOLS = [
         to: S.string('scroll destination (top|bottom|CSS|ref) or drag destination selector'),
         by: S.int('scroll delta in px'),
         submit: S.bool('press Enter after typing'),
+        force: S.bool('click/hover even when another element covers the target (stamped forced:true in the delta)'),
       },
       required: ['session', 'action'],
     },
@@ -116,10 +118,11 @@ const TOOLS = [
       properties: {
         session: sessionArg,
         scope: S.string('CSS selector to limit the audit to a subtree'),
-        themes: S.bool('sweep light AND dark (emulateMedia + the site themeAttr)'),
+        themes: S.bool("sweep light AND dark (emulateMedia + a page RELOAD per leg so boot-time theme readers see it, + the session's themeAttr/themeClass). Byte-identical light/dark shots are reported as a finding."),
         viewports: S.bool('sweep mobile + desktop viewports'),
         axe: S.bool('run the axe-core a11y pass (default true; advisory, never flips ok)'),
         screenshots: S.bool('capture screenshots to disk (default true)'),
+        themeReload: S.bool('reload per theme leg (default true) — set false to preserve in-page state across the sweep'),
       },
       required: ['session'],
     },
@@ -141,7 +144,7 @@ const TOOLS = [
   },
   {
     name: 'gb_wait',
-    description: "Wait for ONE targeted condition, distinct from the automatic settle. `for` is an object: {selector} (visible) | {text} (appears in body) | {url} (substring of location) | {hydration:true} (Astro islands hydrated) | {timeout:ms} (plain sleep). NEVER throws on timeout — returns matched:false so you can branch.",
+    description: "Wait for ONE targeted condition, distinct from the automatic settle. `for` is an object: {selector} (visible) | {text} (appears in body) | {url} | {hydration:true} (Astro islands hydrated) | {timeout:ms} (plain sleep — always succeeds after the duration). A url pattern starting with '/' matches the PATHNAME ('/dashboard' matches /dashboard and /dashboard/x, never /dashboardx); anything else is a substring of the full href; '*' globs. NEVER throws on timeout — returns matched:false so you can branch.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -154,7 +157,7 @@ const TOOLS = [
   },
   {
     name: 'gb_debug',
-    description: "White-box JS debugger in one tool; `op` selects the operation. break {file|urlRegex,line?,condition?} sets a breakpoint; then trigger it (a paused handler blocks that action — expected). While PAUSED, these work in a parallel lane: state (frames), inspect {frame?} (locals with values), eval {expression,frame?} (compute on the frozen frame), step {mode:over|into|out}, resume, pause, screenshot. list/remove manage breakpoints. listeners {selector|ref} finds a dead button's (missing) handlers. IMPORTANT lane rule: while paused, every non-debug tool returns PAUSED — resume first. Recipes: dead button → listeners; handler logic → break+inspect+eval+resume.",
+    description: "White-box JS debugger in one tool; `op` selects the operation. break {file|urlRegex,line?,condition?} sets a breakpoint; then trigger it (a paused handler blocks that action — expected). While PAUSED, these work in a parallel lane: state (frames), inspect {frame?} (locals with values), eval {expression,frame?} (compute on the frozen frame), step {mode:over|into|out}, resume, pause, screenshot. list/remove manage breakpoints. listeners {selector|ref} answers whether a button is wired — it echoes WHICH node it inspected, warns when the selector matched several nodes (a bare 'button' hits the first one in the DOM), and before calling anything dead it checks ancestors for delegated handlers (React 17+ attaches at the root container). IMPORTANT lane rule: while paused, every non-debug tool returns PAUSED — resume first. Recipes: dead button → listeners; handler logic → break+inspect+eval+resume.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -212,7 +215,7 @@ function actBody(a) {
     case 'drag': return { from: a.selector ? { selector: a.selector } : actTarget(a, false), to: { selector: a.to } };
     case 'upload': return { ...actTarget(a, true), files: Array.isArray(a.files) ? a.files : (a.files ? String(a.files).split(',').filter(Boolean) : []) };
     case 'select': return { ...actTarget(a, true), values: Array.isArray(a.value) ? a.value : (a.value ? String(a.value).split(',').filter(Boolean) : []) };
-    default: return actTarget(a, true); // click, dblclick, hover
+    default: return { ...actTarget(a, true), ...(a.force ? { force: true } : {}) }; // click, dblclick, hover
   }
 }
 
@@ -230,13 +233,20 @@ function planCall(tool, a) {
       if (op === 'open') {
         if (!a.name) throw { gb: { code: 'BAD_REQUEST', message: 'gb_session open needs a `name`', field: 'name' } };
         const body = { name: a.name };
-        for (const k of ['headed', 'viewport', 'colorScheme', 'themeAttr', 'baseUrl']) if (a[k] != null) body[k] = a[k];
+        for (const k of ['headed', 'viewport', 'colorScheme', 'themeAttr', 'themeClass', 'baseUrl']) if (a[k] != null) body[k] = a[k];
         return { method: 'POST', route: '/sessions', body };
       }
       if (op === 'list') return { method: 'GET', route: '/sessions' };
       if (op === 'info') return { method: 'GET', route: `/sessions/${enc(needName(a))}` };
       if (op === 'close') return { method: 'DELETE', route: `/sessions/${enc(needName(a))}` };
-      throw { gb: { code: 'BAD_REQUEST', message: `gb_session needs op:open|list|close|info`, field: 'op', valid_values: ['open', 'list', 'close', 'info'] } };
+      // D11 rides inside gb_session on purpose: the 14-tool ceiling is a hard contract (research 04).
+      if (op === 'resize') {
+        const name = needName(a);
+        const vp = a.viewport || {};
+        if (!vp.width || !vp.height) throw { gb: { code: 'BAD_REQUEST', message: 'gb_session resize needs `viewport` {width,height}', field: 'viewport' } };
+        return { method: 'POST', route: `/sessions/${enc(name)}/viewport`, body: { width: Number(vp.width), height: Number(vp.height) } };
+      }
+      throw { gb: { code: 'BAD_REQUEST', message: `gb_session needs op:open|list|close|info|resize`, field: 'op', valid_values: ['open', 'list', 'close', 'info', 'resize'] } };
     }
     case 'gb_goto': return { method: 'POST', route: `/sessions/${enc(needSession())}/goto`, body: { url: a.url } };
     case 'gb_act': {
@@ -246,7 +256,7 @@ function planCall(tool, a) {
     }
     case 'gb_observe': return { method: 'POST', route: `/sessions/${enc(needSession())}/observe`, body: { ...(a.selector ? { selector: a.selector } : {}), ...(a.limit ? { limit: Number(a.limit) } : {}), ...(a.cursor ? { cursor: Number(a.cursor) } : {}) } };
     case 'gb_read': return { method: 'POST', route: `/sessions/${enc(needSession())}/read`, body: { channel: a.channel, ...(a.since ? { since: Number(a.since) } : {}), ...(a.limit ? { limit: Number(a.limit) } : {}) } };
-    case 'gb_verify': return { method: 'POST', route: `/sessions/${enc(needSession())}/verify`, body: { ...(a.scope ? { scope: a.scope } : {}), ...(a.themes ? { themes: true } : {}), ...(a.viewports ? { viewports: true } : {}), ...(a.axe === false ? { axe: false } : {}), ...(a.screenshots === false ? { screenshots: false } : {}) } };
+    case 'gb_verify': return { method: 'POST', route: `/sessions/${enc(needSession())}/verify`, body: { ...(a.scope ? { scope: a.scope } : {}), ...(a.themes ? { themes: true } : {}), ...(a.viewports ? { viewports: true } : {}), ...(a.axe === false ? { axe: false } : {}), ...(a.screenshots === false ? { screenshots: false } : {}), ...(a.themeReload === false ? { themeReload: false } : {}) } };
     case 'gb_screenshot': return { method: 'POST', route: `/sessions/${enc(needSession())}/screenshot`, body: { ...(a.fullPage ? { fullPage: true } : {}), ...(a.selector ? { selector: a.selector } : {}), ...(a.theme ? { theme: a.theme } : {}) } };
     case 'gb_style': {
       const s = needSession();

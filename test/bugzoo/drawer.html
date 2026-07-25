@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — drawer</title>
+<style>
+  body { font-family: sans-serif; color: #111111; background: #ffffff; margin: 16px; }
+  button, input { color: #111111; background: #eeeeee; border: 1px solid #888888; padding: 10px; min-height: 44px; }
+  /* Tailwind's `.invisible` utility on a CLOSED drawer: visibility:hidden on the ANCESTOR, which
+     every interactive descendant inherits while still occupying layout. Reporting one warning per
+     descendant buried the real findings on every planner verify (defect D5) — the group is one
+     fact about one ancestor. */
+  .invisible { visibility: hidden; }
+</style>
+</head>
+<body>
+<main>
+<h1>Drawer page</h1>
+<button id="opener" type="button">Open the drawer</button>
+
+<aside id="drawer" class="invisible drawer-panel">
+  <button id="d1" type="button">Filter</button>
+  <button id="d2" type="button">Sort</button>
+  <button id="d3" type="button">Group</button>
+  <button id="d4" type="button">Reset</button>
+  <button id="d5" type="button">Apply</button>
+  <input id="d6" type="text" value="query">
+  <input id="d7" type="text" value="tag">
+  <a id="d8" href="/clean.html">Docs</a>
+</aside>
+</main>
+</body>
+</html>

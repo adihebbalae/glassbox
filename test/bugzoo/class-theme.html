@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — class theme</title>
+<style>
+  body { background: #ffffff; color: #111111; font-family: sans-serif; margin: 16px; }
+  #note { color: #111111; background: #ffffff; padding: 8px; }
+  /* seed: Tailwind's default dark strategy — darkMode:['class'], a `dark` class toggled on
+     <html>. No media query, no boot script: the ONLY way to reach the dark styles is to put
+     the class there, which is what session.themeClass drives. */
+  .dark body { background: #ffffff; }
+  .dark #note { color: #ffffff; background: #ffffff; }
+</style>
+</head>
+<body>
+<main>
+<h1>Class-theme page</h1>
+<p id="note">Readable until <code>&lt;html class="dark"&gt;</code>, then white-on-white.</p>
+</main>
+</body>
+</html>

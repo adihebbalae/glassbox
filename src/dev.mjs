@@ -238,7 +238,7 @@ export async function runDev(opts = {}, json = false) {
     const c = r.counts || {};
     say(
       { event: 'verify', ok: r.ok, counts: c, report: r.artifacts?.report ?? null, findings: (r.findings || []).slice(0, 5) },
-      `[glassbox] verify ${r.ok ? 'OK' : 'ISSUES'} — console=${c.consoleErrors} pageerr=${c.pageErrors} ` +
+      `[glassbox] verify ${r.ok ? 'OK' : 'ISSUES'} — consoleErrors=${c.consoleErrors} pageerr=${c.pageErrors} ` +
       `net(failed=${c.netFailed} http=${c.netHttpError} hang=${c.netHanging}) a11y=${c.a11y} layout=${c.layout}`
     );
     for (const f of (r.findings || []).slice(0, 5)) line(`[glassbox]   [${f.severity}/${f.channel}] ${f.summary}`);

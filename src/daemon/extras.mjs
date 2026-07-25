@@ -110,11 +110,36 @@ export async function screenshotAction(session, body) {
 // ---- wait -------------------------------------------------------------------
 
 /**
+ * URL-pattern predicate, evaluated in the page (defect D7). Two dialects, chosen by the pattern:
+ *   - starts with `/` → a PATHNAME match: exact, or a prefix that ends on a path SEGMENT boundary
+ *     (`/dashboard` matches /dashboard and /dashboard/settings, never /dashboardx). This is the
+ *     form SKILL.md documents (`for:{url:"/dashboard"}`) and the natural one to write; the old
+ *     substring-of-href rule made `/plan` silently match `/planner`.
+ *   - anything else → substring of location.href (unchanged: 'planner', 'http://host/planner').
+ * A `*` anywhere turns the pattern into a glob against the pathname (leading `/`) or the href.
+ */
+const urlMatches = (u) => {
+  const glob = (pat, s) => new RegExp('^' + pat.split('*').map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$').test(s);
+  if (u.charAt(0) === '/') {
+    const p = location.pathname;
+    if (u.indexOf('*') >= 0) return glob(u, p);
+    if (p === u) return true;
+    return p.indexOf(u.charAt(u.length - 1) === '/' ? u : u + '/') === 0;
+  }
+  if (u.indexOf('*') >= 0) return glob(u, location.href);
+  return location.href.indexOf(u) >= 0;
+};
+
+/**
  * Targeted wait, distinct from settle: block until ONE named condition holds, or the budget lapses.
- * `for`: {selector} (visible) | {text} (substring in body) | {url} (substring of location.href) |
+ * `for`: {selector} (visible) | {text} (substring in body) | {url} (pathname or href pattern) |
  * {hydration:true} (no astro-island[ssr]) | {timeout:ms} (a plain sleep). NEVER throws on timeout —
  * returns {ok, matched:false} so the agent can branch instead of catching. A missing/blank `for`
  * (nothing to wait on) is the one BAD_REQUEST.
+ *
+ * A plain sleep has nothing to match and nothing to time out (defect D10): the requested duration
+ * IS the budget, so it is never clipped by the action timeout (which used to make `sleep 15000`
+ * return "MATCHED in 10000ms" — a lie) and it always reports matched:true.
  */
 export async function waitFor(session, body) {
   const spec = body.for || {};
@@ -127,11 +152,14 @@ export async function waitFor(session, body) {
     } else if (spec.text != null && spec.text !== '') {
       await page.waitForFunction((t) => !!document.body && document.body.innerText.includes(t), spec.text, { timeout: timeoutMs, polling: 100 });
     } else if (spec.url != null && spec.url !== '') {
-      await page.waitForFunction((u) => location.href.includes(u), spec.url, { timeout: timeoutMs, polling: 100 });
+      await page.waitForFunction(urlMatches, String(spec.url), { timeout: timeoutMs, polling: 100 });
     } else if (spec.hydration) {
       await page.waitForFunction(() => !document.querySelector('astro-island[ssr]'), undefined, { timeout: timeoutMs, polling: 100 });
     } else if (spec.timeout != null) {
-      await delay(Math.min(Number(spec.timeout) || 0, timeoutMs));
+      const ms = Math.max(0, Math.min(Number(spec.timeout) || 0, 600000)); // own budget; capped at 10min
+      await delay(ms);
+      session.journal.log('command', { op: 'wait', sleep: ms, matched: true });
+      return { ok: true, matched: true, slept: ms, tookMs: Date.now() - t0 };
     } else {
       throw gbErr(CODES.BAD_REQUEST, 'wait needs `for` with one of: selector|text|url|hydration|timeout', {
         field: 'for', valid_values: ['selector', 'text', 'url', 'hydration', 'timeout'],
@@ -147,6 +175,29 @@ export async function waitFor(session, body) {
     session.journal.log('command', { op: 'wait', matched: false, tookMs });
     return { ok: true, matched: false, tookMs }; // timeout / detach — never throw
   }
+}
+
+// ---- viewport ---------------------------------------------------------------
+
+/**
+ * Resize an EXISTING session (defect D11). Viewport used to be frozen at `session open`, so a
+ * mobile check meant opening a second session and re-seeding all of its state; a theme×viewport
+ * matrix cost N sessions. Runs on the serial queue like any other action, is journaled, and
+ * reports the viewport the page actually ended up with.
+ */
+export async function setViewport(session, body) {
+  const src = body.viewport && typeof body.viewport === 'object' ? body.viewport : body;
+  const width = Math.round(Number(src.width));
+  const height = Math.round(Number(src.height));
+  if (!(width >= 50 && width <= 10000) || !(height >= 50 && height <= 10000)) {
+    throw gbErr(CODES.BAD_REQUEST, 'viewport needs {width,height} in CSS px (50-10000)', {
+      field: 'viewport', correction_hint: 'e.g. {width:390,height:844} — CLI: session resize <name> 390x844',
+    });
+  }
+  await session.page.setViewportSize({ width, height });
+  const inner = await session.page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight })).catch(() => null);
+  session.journal.log('command', { op: 'viewport', width, height });
+  return { ok: true, name: session.name, viewport: { width, height }, inner, url: session.page.url() };
 }
 
 // ---- artifacts --------------------------------------------------------------

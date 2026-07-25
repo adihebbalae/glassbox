@@ -33,6 +33,7 @@ export const CODES = Object.freeze({
   STALE_REF: 'STALE_REF', // a ref outlived its snapshot; re-observe
   NO_TARGET: 'NO_TARGET', // selector/testid/role/text/ref matched nothing
   ACT_TIMEOUT: 'ACT_TIMEOUT', // Playwright actionability check unmet within the per-action budget
+  ACT_OCCLUDED: 'ACT_OCCLUDED', // another element covers the target's hit point; a real pointer can't reach it
   DIALOG_PENDING: 'DIALOG_PENDING', // a native dialog must be answered before other actions proceed
   NO_DIALOG: 'NO_DIALOG', // dialog responder called with nothing pending
   // M3 — verification engine
@@ -53,6 +54,7 @@ export const HTTP_STATUS = Object.freeze({
   STALE_REF: 409,
   NO_TARGET: 404,
   ACT_TIMEOUT: 504,
+  ACT_OCCLUDED: 409,
   DIALOG_PENDING: 409,
   NO_DIALOG: 409,
   BAD_CHANNEL: 400,

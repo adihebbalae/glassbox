@@ -76,12 +76,30 @@ async function daemonStatus() {
   );
 }
 
+const watchUrlFor = (d, name) => `http://127.0.0.1:${d.port}/watch/${encodeURIComponent(name)}?token=${d.token}`;
+
 async function sessionOpen(name, opts) {
   if (!name) fail({ code: 'BAD_REQUEST', message: 'session name required', correction_hint: 'glassbox session open <name>' });
   const d = await ensureDaemon();
   const { status, body } = await daemonReq(d, 'POST', '/sessions', { name, ...opts });
   if (status !== 200) return fail(body.error);
-  out(body, `session '${name}' open (${body.headed ? 'headed' : 'headless'})`);
+  // The watch URL is the human-facing hook the skill promises at open (defect D8) — the MCP face
+  // already returned it, the CLI silently didn't.
+  const watchUrl = watchUrlFor(d, name);
+  const vp = body.viewport ? ` ${body.viewport.width}x${body.viewport.height}` : '';
+  out({ ...body, watchUrl }, `session '${name}' open (${body.headed ? 'headed' : 'headless'}${vp})\n  watch: ${watchUrl}`);
+}
+
+// D11 — resize an existing session instead of opening a second one and re-seeding its state.
+async function sessionResize(name, arg, opts) {
+  if (!name) fail({ code: 'BAD_REQUEST', message: 'session name required', correction_hint: 'glassbox session resize <name> 390x844' });
+  const m = /^(\d+)x(\d+)$/.exec(arg || '');
+  const vp = m ? { width: Number(m[1]), height: Number(m[2]) } : opts.viewport;
+  if (!vp) fail({ code: 'BAD_REQUEST', message: 'viewport required as WxH', field: 'viewport', correction_hint: 'glassbox session resize <name> 390x844' });
+  const d = await ensureDaemon();
+  const { status, body } = await daemonReq(d, 'POST', `/sessions/${encodeURIComponent(name)}/viewport`, vp);
+  if (status !== 200) return fail(body.error);
+  out(body, `session '${name}' resized to ${body.viewport.width}x${body.viewport.height} (inner ${body.inner?.w}x${body.inner?.h})`);
 }
 
 async function sessionLs() {
@@ -147,10 +165,7 @@ function openBrowser(url) {
 
 async function watch(name) {
   const d = await ensureDaemon();
-  const base = `http://127.0.0.1:${d.port}`;
-  const url = name
-    ? `${base}/watch/${encodeURIComponent(name)}?token=${d.token}`
-    : `${base}/?token=${d.token}`;
+  const url = name ? watchUrlFor(d, name) : `http://127.0.0.1:${d.port}/?token=${d.token}`;
   if (!process.env.GLASSBOX_NO_OPEN) openBrowser(url); // tests set this to avoid popping a real tab
 
   out({ url, session: name || null }, name ? `watching '${name}' → ${url}` : `session grid → ${url}`);
@@ -170,9 +185,30 @@ function buildTarget(verb, pos, opts) {
   return {};
 }
 
+/**
+ * Git Bash (MSYS) rewrites a leading-slash ARGUMENT into a Windows path before node ever sees it:
+ * `--url /planner` arrives as `C:/Program Files/Git/planner`, which is why the documented
+ * `for:{url:"/dashboard"}` form "timed out" while `planner` matched (defect D7). A URL pattern is
+ * never an absolute Windows path, so recover the intent by stripping the longest prefix that is a
+ * real directory on disk — i.e. exactly the MSYS root it prepended.
+ */
+function unmangleMsysPath(v) {
+  if (typeof v !== 'string' || process.platform !== 'win32' || !process.env.MSYSTEM) return v;
+  if (!/^[A-Za-z]:[\\/]/.test(v)) return v;
+  const parts = v.replace(/\\/g, '/').split('/');
+  for (let i = parts.length - 1; i >= 1; i--) {
+    const prefix = parts.slice(0, i).join('/');
+    try {
+      if (prefix.length > 2 && fs.statSync(prefix).isDirectory()) return '/' + parts.slice(i).join('/');
+    } catch { /* not a directory — keep shortening */ }
+  }
+  return v;
+}
+
 function buildBody(verb, pos, opts) {
   const t = buildTarget(verb, pos, opts);
   const timeout = opts.timeoutMs ? { timeoutMs: Number(opts.timeoutMs) } : {};
+  const force = opts.force ? { force: true } : {};
   switch (verb) {
     case 'goto': return { url: pos[1] || opts.url, ...timeout };
     case 'observe': return { ...(opts.selector ? { selector: opts.selector } : {}), ...(opts.limit ? { limit: Number(opts.limit) } : {}), ...(opts.cursor ? { cursor: Number(opts.cursor) } : {}) };
@@ -190,6 +226,7 @@ function buildBody(verb, pos, opts) {
       ...(opts.viewports ? { viewports: true } : {}),
       ...(opts.noAxe ? { axe: false } : {}),
       ...(opts.noShots ? { screenshots: false } : {}),
+      ...(opts.noThemeReload ? { themeReload: false } : {}),
     };
     case 'read': return {
       channel: pos[1] || opts.channel || 'errors',
@@ -206,12 +243,12 @@ function buildBody(verb, pos, opts) {
       const f = {};
       if (opts.selector) f.selector = opts.selector;
       else if (opts.text) f.text = opts.text;
-      else if (opts.url) f.url = opts.url;
+      else if (opts.url) f.url = unmangleMsysPath(opts.url);
       else if (opts.hydration) f.hydration = true;
       else if (opts.sleep) f.timeout = Number(opts.sleep);
       return { for: f, ...(opts.timeoutMs ? { timeoutMs: Number(opts.timeoutMs) } : {}) };
     }
-    default: return { ...t, ...timeout }; // click, dblclick, hover
+    default: return { ...t, ...force, ...timeout }; // click, dblclick, hover
   }
 }
 
@@ -230,7 +267,9 @@ function printResult(verb, r) {
   if (verb === 'verify') {
     const c = r.counts || {};
     console.log(`verify ${r.ok ? 'OK' : 'ISSUES'} — ${r.settled ? 'settled' : 'UNSETTLED'} at ${r.url}`);
-    console.log(`  counts: console=${c.consoleErrors} pageerr=${c.pageErrors} net(failed=${c.netFailed} http=${c.netHttpError} hang=${c.netHanging} mixed=${c.netMixed}) a11y=${c.a11y} layout=${c.layout}`);
+    // `consoleErrors`, not `console`: these are console.error entries since the last navigation,
+    // not the whole console buffer (dogfood observation — the short name invited misreading).
+    console.log(`  counts: consoleErrors=${c.consoleErrors} pageerr=${c.pageErrors} net(failed=${c.netFailed} http=${c.netHttpError} hang=${c.netHanging} mixed=${c.netMixed}) a11y=${c.a11y} layout=${c.layout}`);
     for (const f of r.findings || []) console.log(`  [${f.severity}/${f.channel}] ${f.summary}`);
     const a = r.artifacts || {};
     console.log(`  report: ${a.report}`);
@@ -261,8 +300,15 @@ function printResult(verb, r) {
     return;
   }
   if (verb === 'screenshot') { console.log(`screenshot -> ${r.path}  (${r.bytes} bytes, ${r.w}x${r.h})`); return; }
-  if (verb === 'wait') { console.log(`wait — ${r.matched ? 'MATCHED' : 'timed out (matched:false)'} in ${r.tookMs}ms`); return; }
+  if (verb === 'wait') {
+    if (r.slept != null) { console.log(`wait — slept ${r.slept}ms (${r.tookMs}ms)`); return; }
+    console.log(`wait — ${r.matched ? 'MATCHED' : 'timed out (matched:false)'} in ${r.tookMs}ms`);
+    return;
+  }
+  if (verb === 'viewport') { console.log(`viewport ${r.viewport.width}x${r.viewport.height} (inner ${r.inner?.w}x${r.inner?.h})`); return; }
   const bits = [r.settled ? 'settled' : `UNSETTLED(${(r.settleWhy || []).join(',')})`, `${r.mutations} mut`];
+  if (r.forced) bits.push(`FORCED${r.occludedBy ? ` (through ${r.occludedBy})` : ''}`);
+  if (r.note) bits.push(r.note);
   if (r.urlChanged) bits.push(`url→ ${r.url}`);
   if (r.console?.length) bits.push(`${r.console.length} console`);
   if (r.dialog) bits.push(`DIALOG ${r.dialog.type}: ${JSON.stringify(r.dialog.message)}`);
@@ -313,8 +359,16 @@ function printDebug(op, r) {
   if (op === 'remove') { console.log(`removed ${r.removed?.length || 0} breakpoint(s)`); return; }
   if (op === 'screenshot') { console.log(`screenshot -> ${r.path} (${r.bytes} bytes)`); return; }
   if (op === 'listeners') {
-    if (!r.count) return console.log('no event listeners (dead element)');
-    for (const L of r.listeners) console.log(`  ${L.type}${L.once ? ' once' : ''}${L.capture ? ' capture' : ''}  ${L.sourceLoc || ''}  ${L.source ? '{ ' + L.source + ' }' : ''}`);
+    // Always say WHICH element was inspected, and never call an element dead without checking its
+    // ancestors for delegation (defect D6).
+    const e = r.element;
+    if (e) console.log(`inspected ${e.desc}${e.text ? `  "${e.text}"` : ''}${e.visible === false ? '  [not visible]' : ''}`);
+    if (r.warning) console.log(`  ! ${r.warning}`);
+    for (const L of r.listeners || []) console.log(`  ${L.type}${L.once ? ' once' : ''}${L.capture ? ' capture' : ''}  ${L.sourceLoc || ''}  ${L.source ? '{ ' + L.source + ' }' : ''}`);
+    if (!r.count) {
+      console.log(`  ${r.verdict || 'no event listeners (dead element)'}`);
+      for (const dgt of r.delegated || []) console.log(`    ↑ ${dgt.on} (${dgt.depth} up): ${dgt.types.join(', ')}`);
+    }
     return;
   }
   if (op === 'coverage-start') { console.log(`coverage started${r.css ? ' (css tracked)' : ''}`); return; }
@@ -372,9 +426,11 @@ async function runVerb(verb, pos, opts) {
   if (!session) fail({ code: 'BAD_REQUEST', message: 'session required', correction_hint: 'pass -s <session> or set GLASSBOX_SESSION' });
   const d = await ensureDaemon();
   const body = buildBody(verb, pos, opts);
-  // verify can run multiple settles + axe + a theme×viewport sweep; give it a much larger budget
-  // than a single action so a slow page (or a hanging request under the settle cap) never aborts.
-  const ms = verb === 'verify' ? 120000 : 30000;
+  // verify can run multiple settles + axe + a theme×viewport sweep (each theme leg reloads); give
+  // it a much larger budget than a single action so a slow page never aborts. A `wait` owns its own
+  // budget — the HTTP call must outlive the sleep it asked for, or the client aborts a healthy wait.
+  let ms = verb === 'verify' ? 180000 : 30000;
+  if (verb === 'wait') ms = Math.max(30000, (Number(opts.sleep) || 0) + 20000, (Number(opts.timeoutMs) || 0) + 20000);
   const { status, body: resp } = await daemonReq(d, 'POST', `/sessions/${encodeURIComponent(session)}/${verb}`, body, ms);
   if (status !== 200) return fail(resp.error);
   printResult(verb, resp);
@@ -425,7 +481,8 @@ const VALUE_FLAGS = {
   '--text': 'text', '--url': 'url', '--to': 'to', '--by': 'by', '--key': 'key', '--from': 'from',
   '--files': 'files', '--values': 'values', '--limit': 'limit', '--cursor': 'cursor',
   '--action': 'action', '--timeout': 'timeoutMs',
-  '--scope': 'scope', '--channel': 'channel', '--since': 'since', '--theme-attr': 'themeAttr',
+  '--scope': 'scope', '--channel': 'channel', '--since': 'since',
+  '--theme-attr': 'themeAttr', '--theme-class': 'themeClass',
   // M7 dev loop ('--timeout' doubles as dev's startup budget, in SECONDS — see dev.mjs)
   '--cmd': 'cmd', '--cwd': 'cwd',
   // M4 debug/style
@@ -448,6 +505,8 @@ function parseArgs(argv) {
     else if (a === '--viewports') opts.viewports = true;
     else if (a === '--no-axe') opts.noAxe = true;
     else if (a === '--no-shots') opts.noShots = true;
+    else if (a === '--no-theme-reload') opts.noThemeReload = true;
+    else if (a === '--force') opts.force = true;
     else if (a === '--full') opts.fullPage = true;
     else if (a === '--hydration') opts.hydration = true;
     else if (a === '--await') opts.awaitPromise = true;
@@ -467,8 +526,10 @@ const HELP = `glassbox <command>   ·   CLI = MCP tools = same daemon. [--json] 
 
 SESSIONS
   daemon start|stop|status
-  session open <name> [--headed] [--viewport WxH] [--color light|dark] [--theme-attr ATTR] [--base-url URL]
+  session open <name> [--headed] [--viewport WxH] [--color light|dark] [--base-url URL]
+                      [--theme-attr ATTR] [--theme-class CLASS]   (the site's own theme switch)
   session ls                  session rm <name>
+  session resize <name> WxH   (alias: set-viewport — no need to re-open + re-seed for mobile)
   artifacts -s <session>      (list on-disk shots/reports/net/journal)
   kill-all                    (reap the daemon + every glassbox chromium)
   mcp                         (run the stdio MCP server — put this in .mcp.json)
@@ -476,6 +537,7 @@ SESSIONS
 NAVIGATE + ACT   (all take -s <session> or GLASSBOX_SESSION)
   goto <url>
   click|dblclick|hover <css> | --ref eN | --testid ID | --role R [--name N] | --selector CSS | --text T
+      [--force]   (click even when something covers the target; recorded as forced:true)
   type <text> --selector CSS [--submit]        press <key> [--selector CSS]
   scroll [--to top|bottom|CSS|eN] [--by PX]     dialog accept|dismiss [--text T]
   drag --from CSS --to CSS     upload --selector CSS --files a,b     select --selector CSS --values x,y
@@ -483,7 +545,7 @@ NAVIGATE + ACT   (all take -s <session> or GLASSBOX_SESSION)
 
 OBSERVE + VERIFY
   observe [--selector CSS] [--limit N] [--cursor N]
-  verify [--scope CSS] [--themes] [--viewports] [--no-axe] [--no-shots]
+  verify [--scope CSS] [--themes] [--viewports] [--no-axe] [--no-shots] [--no-theme-reload]
   read [console|network|errors|overlay] [--since N] [--limit N]
   screenshot|shot [--full] [--selector CSS] [--theme light|dark]     (writes a path; never inline)
   settle                       (block until the page quiesces)
@@ -517,6 +579,7 @@ async function main() {
     if (verb === 'session' && sub === 'open') return await sessionOpen(arg, opts);
     if (verb === 'session' && (sub === 'ls' || sub === 'list')) return await sessionLs();
     if (verb === 'session' && (sub === 'rm' || sub === 'close')) return await sessionRm(arg);
+    if (verb === 'session' && (sub === 'resize' || sub === 'set-viewport')) return await sessionResize(arg, pos[3], opts);
     if (verb === 'kill-all') return await killAll();
     if (verb === 'watch') return await watch(sub);
     if (verb === 'dev') return await runDevVerb(opts);

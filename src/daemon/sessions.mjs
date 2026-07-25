@@ -176,6 +176,9 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       // 'data-theme') is the site's own theme mechanism verify drives alongside emulateMedia.
       rec.colorScheme = opts.colorScheme || null;
       rec.themeAttr = opts.themeAttr || null;
+      // themeClass is themeAttr's sibling for the OTHER dominant mechanism: Tailwind's
+      // darkMode:['class'] — a bare `dark` class on <html>, which no attribute sweep can reach.
+      rec.themeClass = opts.themeClass || null;
       // Nav markers scope verify's error/network report to the CURRENT page load (a prior page's
       // console errors and 4xx must not leak into this page's report).
       rec._navMark = 0;
@@ -200,6 +203,8 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
         headed: rec.headed,
         viewport: opts.viewport ?? null,
         colorScheme: opts.colorScheme ?? null,
+        themeAttr: rec.themeAttr,
+        themeClass: rec.themeClass,
       });
       return info(name);
     } catch (e) {
@@ -215,6 +220,7 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       createdAt: s.createdAt,
       url: s.page.url(),
       headed: s.headed,
+      viewport: s.page.viewportSize(),
       idleMs: Date.now() - s.lastTouch,
       cdp: cdpBlock(s), // browser/target ws + DevTools link (null if no debug port)
     };
