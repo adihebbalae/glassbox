@@ -159,12 +159,74 @@ function layoutFinding(f, combo) {
   return { channel: 'layout', severity: 'warn', summary: `${label}: ${f.desc}${combo ? ` [${combo}]` : ''} — ${f.detail}`, selector: f.desc, ...(combo ? { combo } : {}) };
 }
 
+// ---- load state: cold vs warm (defect W3) -----------------------------------
+// The WCII dogfood watched two real findings vanish on a warm reload — a `/favicon.ico` 404 and a
+// CLS of 0.1734 — with nothing in the report saying the measurement conditions had changed. That
+// is a false all-clear, the worst failure mode this tool has.
+//
+// Investigation (test/bugzoo/cache.html + /counts): `Network.setCacheDisabled(true)` IS applied and
+// DOES work — every renderer-initiated sub-resource is re-fetched on every navigation (3 loads → 3
+// server hits for a `max-age=600` script). What escapes it is (a) Chrome's IMPLICIT /favicon.ico
+// probe, issued by the BROWSER process outside the page session's Network domain and negatively
+// cached per profile (measured: 3 navigations → 1 request), and (b) CLS itself, which is a race
+// between first paint and a resource arriving — a warm load wins that race even with a cold cache.
+// Neither is fixable by a flag, so the honest answers are: label the load state, offer a real cold
+// run, and say so when the numbers were measured warm.
+
+/** Cold-navigate in place: clear the HTTP cache, then re-navigate cache-bypassed. */
+async function coldNavigate(session) {
+  const { page, cdp } = session;
+  const url = page.url();
+  if (!url || url === 'about:blank') return { done: false, why: 'no page is loaded to reload' };
+  await cdp.send('Network.clearBrowserCache').catch(() => {});
+  await cdp.send('Network.setCacheDisabled', { cacheDisabled: true }).catch(() => {});
+  try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }); }
+  catch { return { done: false, why: 'reload timed out' }; }
+  await settle(session, { navigation: true });
+  return { done: true };
+}
+
+/** Describe the load state the current document was measured in. */
+function navState(session, coldRun) {
+  const nav = session._nav || { docLoads: 0, byUrl: new Map(), sameDoc: false };
+  const url = session.page.url();
+  const urlLoads = nav.byUrl.get(url) || 0;
+  if (coldRun && coldRun.done) {
+    return { kind: 'cold', reason: 'forced: HTTP cache cleared and the page re-navigated for this run', documentLoads: nav.docLoads, urlLoads, sameDocument: false, forced: true };
+  }
+  const base = { documentLoads: nav.docLoads, urlLoads, sameDocument: !!nav.sameDoc, forced: false };
+  if (nav.sameDoc) return { kind: 'warm', reason: 'same-document navigation — no fresh document since the last load', ...base };
+  // <=1 rather than ===1: a page whose `load` never fires (a hanging subresource) is still a first
+  // load, and must not be mislabelled warm.
+  if (nav.docLoads <= 1 && urlLoads <= 1) return { kind: 'cold', reason: 'first document load in this session', ...base };
+  if (urlLoads > 1) return { kind: 'warm', reason: `this URL has been loaded ${urlLoads}× in this session`, ...base };
+  return { kind: 'warm', reason: `the session already loaded ${nav.docLoads} document(s) — sockets, DNS and browser-side caches are warm`, ...base };
+}
+
+// ---- expected-404 allowlist (defect W4) -------------------------------------
+
+/** Does `url`'s pathname match one allowlist entry? Exact, or a `*` glob. */
+function matches404(url, patterns) {
+  let pathname = url;
+  try { pathname = new URL(url).pathname; } catch { /* keep the raw string */ }
+  for (const raw of patterns) {
+    const p = String(raw || '').trim();
+    if (!p) continue;
+    if (p === pathname) return p;
+    if (p.includes('*')) {
+      const rx = new RegExp('^' + p.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
+      if (rx.test(pathname)) return p;
+    }
+  }
+  return null;
+}
+
 // ---- verify -----------------------------------------------------------------
 
 /**
  * Run the full bundle. `opts`: {scope?, themes?, viewports?(bool|[{w,h,label}]), axe?=true,
- * screenshots?=true, themeReload?=true}. Returns the compact report; full detail is written to
- * reports/verify-<n>.json.
+ * screenshots?=true, themeReload?=true, cold?=false, ignore404?:string[]}. Returns the compact
+ * report; full detail is written to reports/verify-<n>.json.
  */
 export async function verify(session, opts = {}) {
   const t0 = Date.now();
@@ -179,6 +241,11 @@ export async function verify(session, opts = {}) {
     await el.dispose().catch(() => {});
   }
 
+  // COLD (defect W3): a warm reload silently drops first-load findings — a negative-cached 404
+  // never re-requests, and CLS is a first-paint race a warm load simply wins. `cold:true` clears
+  // the HTTP cache and re-navigates before measuring so those are captured faithfully.
+  const coldRun = opts.cold === true ? await coldNavigate(session) : null;
+
   const settleRes = await settle(session, {});
   const n = (session._verifyN = (session._verifyN || 0) + 1);
   const mapper = sourceMapper(session);
@@ -186,12 +253,35 @@ export async function verify(session, opts = {}) {
   // errors (scoped to the current page load via the nav mark; remapped through sourcemaps)
   const navMark = session._navMark || 0;
   const entries = session.console.entries(navMark);
-  const consoleErrs = await Promise.all(entries.filter((e) => e.kind === 'error').map((e) => mapper.remapEntry(e)));
+  const allConsoleErrs = await Promise.all(entries.filter((e) => e.kind === 'error').map((e) => mapper.remapEntry(e)));
   const pageErrs = await Promise.all(entries.filter((e) => e.kind === 'pageerror').map((e) => mapper.remapEntry(e)));
 
   // network taxonomy (current page only; mixed-content from console strings)
   const consoleTexts = session.console.all().map((e) => e.text);
   const net = session.net.classify({ consoleTexts, sinceTs: session._navTs || 0 });
+
+  // W4 — expected-404 allowlist. ONLY status-404 rows are demoted: the same path failing with a
+  // 500 or a transport error still reports normally (an allowlist that hid those would re-create
+  // exactly the false all-clear W3 is about). Demoted rows are kept in the on-disk report.
+  const ignoreList = [...(session.ignore404 || []), ...(Array.isArray(opts.ignore404) ? opts.ignore404 : [])];
+  const ignored404 = [];
+  if (ignoreList.length) {
+    const keep = [];
+    for (const r of net.httpError) {
+      const hit = r.status === 404 ? matches404(r.url, ignoreList) : null;
+      if (hit) ignored404.push({ ...r, ignoredBy: hit }); else keep.push(r);
+    }
+    net.httpError = keep;
+  }
+  // The browser also logs a console error for each of those 404s ("Failed to load resource: …404"),
+  // located AT the resource URL. Demote exactly those — matched by URL against the rows we just
+  // demoted, so a 500 on the same path keeps its console error.
+  const ignoredUrls = new Set(ignored404.map((r) => r.url));
+  const consoleErrs = [], ignoredConsole = [];
+  for (const e of allConsoleErrs) {
+    const isResourceErr = /failed to load resource/i.test(e.text || '') && [...ignoredUrls].some((u) => (e.loc || '').startsWith(u));
+    if (isResourceErr) ignoredConsole.push(e); else consoleErrs.push(e);
+  }
 
   // layout (baseline) + overlay + a11y
   const baseLayout = await runLayout(page, scope);
@@ -277,7 +367,33 @@ export async function verify(session, opts = {}) {
       detail: 'expected while a dialog is open — occlusion warnings for those elements are suppressed, not lost',
     });
   }
+  // ONE info line per deferred (content-visibility:auto) section — not pathology (defect W1).
+  for (const g of baseLayout?.deferred || []) {
+    findings.push({
+      channel: 'layout', severity: 'info',
+      summary: `${g.count} interactive element${g.count > 1 ? 's' : ''} in deferred section ${g.desc} (content-visibility:auto, not yet painted); scroll to audit`,
+      detail: `deferred rendering, not a hide: ${g.samples.join(', ')}${g.count > g.samples.length ? ', …' : ''} paint on scroll. Scroll the section into view and re-verify to audit its contrast/occlusion.`,
+    });
+  }
+  if (ignored404.length) {
+    findings.push({
+      channel: 'network', severity: 'info',
+      summary: `Ignored 404s: ${ignored404.length} (allowlisted: ${[...new Set(ignored404.map((r) => r.ignoredBy))].join(', ')})`,
+      detail: ignored404.map((r) => { try { return new URL(r.url).pathname; } catch { return r.url; } }).join(', ') + ' — kept in the on-disk report under network.ignored404; only status-404 rows are demoted.',
+    });
+  }
   for (const g of axeGroups) findings.push({ channel: 'a11y', severity: g.impact === 'critical' || g.impact === 'serious' ? 'warn' : 'info', summary: `${g.help} (${g.count}×): ${g.sample}`, selector: g.sample, detail: `rule ${g.ruleId} (${g.impact})` });
+
+  // The load-state caveat goes LAST among the warns (stable sort): it qualifies the whole report
+  // rather than naming a defect, but it must be impossible to miss (defect W3c).
+  const navigation = navState(session, coldRun);
+  if (navigation.kind === 'warm') {
+    findings.push({
+      channel: 'navigation', severity: 'warn',
+      summary: `Measured after a WARM load (${navigation.reason}) — first-load CLS and first-request failures may be understated`,
+      detail: 'CLS is a first-paint race a warm load wins, and a negatively-cached 404 (e.g. /favicon.ico) is never re-requested. Re-run with cold:true (--cold), or measure in a fresh session, before believing a clean result.',
+    });
+  }
 
   findings.sort((a, b) => (RANK[a.severity] ?? 3) - (RANK[b.severity] ?? 3));
 
@@ -290,6 +406,8 @@ export async function verify(session, opts = {}) {
     consoleErrors: consoleErrs.length, pageErrors: pageErrs.length,
     netFailed: net.failed.length, netHttpError: net.httpError.length, netHanging: net.hanging.length, netMixed: net.mixedContent.length,
     a11y: axeGroups.length, layout: layoutCount,
+    ...(ignored404.length || ignoredConsole.length ? { ignored404: ignored404.length + ignoredConsole.length } : {}),
+    ...(baseLayout?.deferred?.length ? { deferred: baseLayout.deferred.reduce((n2, g) => n2 + g.count, 0) } : {}),
   };
   // ok = no errors/pathologies. a11y is advisory (never flips ok — "no automated violations" ≠
   // accessible, and axe noise must not gate; guardrail-safe) and reported in counts only.
@@ -303,20 +421,22 @@ export async function verify(session, opts = {}) {
   if (wantAxe) { axePath = session.journal.alloc('reports', `axe-${n}.json`); try { fs.writeFileSync(axePath, JSON.stringify(axeRaw)); } catch { /* disk */ } }
   const reportPath = session.journal.alloc('reports', `verify-${n}.json`);
   const full = {
-    ok, settled: settleRes.settled, settleWhy: settleRes.why, url: page.url(), counts,
+    ok, settled: settleRes.settled, settleWhy: settleRes.why, url: page.url(), navigation, counts,
     findings, // uncapped on disk
-    errors: { console: consoleErrs, page: pageErrs },
-    network: net, layout: baseLayout, sweep: comboFindings, theme: themeFindings,
-    modal: baseLayout?.modal || null, overlay, a11y: axeGroups,
+    // Demoted rows are DEMOTED, never dropped: an allowlist that deletes evidence is a liability.
+    errors: { console: consoleErrs, page: pageErrs, ...(ignoredConsole.length ? { ignored: ignoredConsole } : {}) },
+    network: { ...net, ...(ignored404.length ? { ignored404 } : {}) },
+    layout: baseLayout, sweep: comboFindings, theme: themeFindings,
+    modal: baseLayout?.modal || null, deferred: baseLayout?.deferred || [], overlay, a11y: axeGroups,
     artifacts: { screenshots: shots, axe: axePath, netlog: netlogPath }, tookMs: 0,
   };
   full.tookMs = Date.now() - t0;
   try { fs.writeFileSync(reportPath, JSON.stringify(full, null, 2)); } catch { /* disk */ }
 
-  session.journal.log('command', { op: 'verify', ok, counts, report: reportPath });
+  session.journal.log('command', { op: 'verify', ok, counts, navigation: navigation.kind, report: reportPath });
 
   return {
-    ok, settled: settleRes.settled, url: page.url(), counts,
+    ok, settled: settleRes.settled, url: page.url(), navigation, counts,
     findings: findings.slice(0, 20),
     artifacts: { report: reportPath, screenshots: shots, ...(axePath ? { axe: axePath } : {}), netlog: netlogPath },
     tookMs: Date.now() - t0,

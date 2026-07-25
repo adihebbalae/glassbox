@@ -24,7 +24,7 @@ export function layoutAuditSource(cfg = {}) {
   const cap = CFG.cap;
   const docEl = document.documentElement;
   const root = CFG.scope ? (document.querySelector(CFG.scope) || document) : document;
-  const out = { overflow:[], occlusion:[], invisible:[], zeroSize:[], brokenImages:[], contrast:[], cls:[], truncated:{}, modal:null };
+  const out = { overflow:[], occlusion:[], invisible:[], zeroSize:[], brokenImages:[], contrast:[], cls:[], truncated:{}, modal:null, deferred:[] };
   const SEL = 'a,button,input,select,textarea,[onclick],[role],[tabindex]';
 
   const describe = (el) => {
@@ -84,6 +84,24 @@ export function layoutAuditSource(cfg = {}) {
   // element, not one warning per descendant button (defect D5) — so descendants hidden by an
   // ancestor are grouped under the ancestor that actually hides them, and only an element hidden
   // BY ITSELF is reported on its own.
+  // THIRD BUCKET (defect W1): \`content-visibility: auto\` is a PERFORMANCE primitive — an off-screen
+  // section skips rendering work and paints the moment it scrolls into view. Its descendants are
+  // neither deliberately hidden (display:none) nor accidentally invisible (the bug class): they are
+  // DEFERRED. Reporting them as "cannot be seen" is a wrong verdict — WCII's building page produced
+  // 10 such warnings for links that render perfectly on scroll. They collapse to one info line per
+  // deferred container and are never counted as pathology. \`content-visibility: hidden\`, by
+  // contrast, IS a hide primitive and is treated like display:none: deliberate, not reported.
+  const deferGroups = new Map();
+  const cvSource = (el) => {
+    let auto = null, hidden = null;
+    for (let n = el; n; n = n.parentElement) {
+      let cv = '';
+      try { cv = getComputedStyle(n).contentVisibility; } catch(e) { break; }
+      if (cv === 'auto' && !auto) auto = n;
+      if (cv === 'hidden' && !hidden) hidden = n;
+    }
+    return { auto, hidden };
+  };
   const invisGroups = new Map();
   for (const el of root.querySelectorAll(SEL)) {
     const r = el.getBoundingClientRect();
@@ -92,6 +110,18 @@ export function layoutAuditSource(cfg = {}) {
       if (occupies) {
         const cs0 = getComputedStyle(el);
         let why, src = el;
+        if (cs0.visibility === 'visible' && parseFloat(cs0.opacity) !== 0) {
+          // not hidden by visibility/opacity → the only remaining cause is content-visibility
+          const cv = cvSource(el);
+          if (cv.hidden) continue;                      // deliberate hide, like display:none
+          if (cv.auto) {
+            const g = deferGroups.get(cv.auto) || { desc: describe(cv.auto), count: 0, samples: [] };
+            g.count += 1;
+            if (g.samples.length < 3) g.samples.push(describe(el));
+            deferGroups.set(cv.auto, g);
+            continue;
+          }
+        }
         if (cs0.visibility !== 'visible') {
           why = 'visibility:' + cs0.visibility;
           // visibility is INHERITED: walk up to the OUTERMOST element still carrying it — that is
@@ -128,6 +158,9 @@ export function layoutAuditSource(cfg = {}) {
   for (const g of invisGroups.values()) {
     cappedPush(out.invisible, 'invisible', { type:'invisible', desc:g.desc, count:g.count,
       detail:'hides ' + g.count + ' interactive descendant' + (g.count > 1 ? 's' : '') + ' (' + g.why + ' on this ancestor: ' + g.samples.join(', ') + (g.count > g.samples.length ? ', …' : '') + ') — they occupy layout but cannot be seen or clicked' });
+  }
+  for (const g of deferGroups.values()) {
+    if (out.deferred.length < cap) out.deferred.push({ type:'deferred', desc:g.desc, count:g.count, samples:g.samples });
   }
 
   // --- broken images ---------------------------------------------------------

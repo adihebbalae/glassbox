@@ -62,17 +62,99 @@ function quadBox(q) {
   return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
 }
 
+// ---- forced paint for content-visibility:auto (defect W2) -------------------
+// `content-visibility: auto` is a PERFORMANCE primitive: an off-screen subtree reserves its
+// `contain-intrinsic-size` in layout but is never painted. `Page.captureScreenshot` with
+// captureBeyondViewport does NOT force those subtrees to render, so a full-page capture stitches
+// blank paper over every deferred section — an actively misleading artifact, because a reviewing
+// agent reads a screenshot as primary evidence. So a full capture forces them to paint first and
+// reports how many containers it forced.
+//
+// Two things matter in HOW. (1) Only `auto` is forced: `content-visibility: hidden` is a genuine
+// hide primitive and must stay hidden, or the screenshot lies in the other direction. (2) Nothing
+// is injected into the DOM — the rule goes into an INSPECTOR stylesheet (CSS.createStyleSheet, the
+// DevTools mechanism), which is not a node, so the session's MutationObserver never fires, observe
+// refs do not go stale, and mutation deltas stay honest.
+const CV_COLLECT = `(() => {
+  const path = (el) => {
+    const parts = [];
+    let n = el;
+    while (n && n.nodeType === 1 && n !== document.documentElement) {
+      let sel = n.tagName.toLowerCase();
+      const p = n.parentElement;
+      if (p) {
+        const same = Array.prototype.filter.call(p.children, (c) => c.tagName === n.tagName);
+        if (same.length > 1) sel += ':nth-of-type(' + (same.indexOf(n) + 1) + ')';
+      }
+      parts.unshift(sel);
+      n = n.parentElement;
+    }
+    return parts.length ? ('html > ' + parts.join(' > ')) : 'html';
+  };
+  const out = [];
+  for (const el of document.querySelectorAll('*')) {
+    let cv = '';
+    try { cv = getComputedStyle(el).contentVisibility; } catch (e) { continue; }
+    if (cv === 'auto') { out.push(path(el)); if (out.length >= 200) break; }
+  }
+  return out;
+})()`;
+
+const paintTick = (page) => page
+  .evaluate('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => r(1), 30))))')
+  .catch(() => {});
+
+/**
+ * Force every `content-visibility:auto` subtree to paint for the duration of a capture.
+ * Returns {count, restore()}; restore() is always safe to call and puts the page back exactly.
+ */
+export async function forcePaint(session) {
+  const { page, cdp } = session;
+  const noop = { count: 0, restore: async () => {} };
+  let paths = [];
+  try { paths = await page.evaluate(CV_COLLECT); } catch { return noop; }
+  if (!Array.isArray(paths) || !paths.length) return noop;
+  let styleSheetId = null;
+  try {
+    await cdp.send('DOM.enable').catch(() => {});
+    await cdp.send('CSS.enable').catch(() => {});
+    const { frameTree } = await cdp.send('Page.getFrameTree');
+    const frameId = frameTree?.frame?.id;
+    if (!frameId) return noop;
+    ({ styleSheetId } = await cdp.send('CSS.createStyleSheet', { frameId }));
+    await cdp.send('CSS.setStyleSheetText', {
+      styleSheetId,
+      text: `${paths.join(',')} { content-visibility: visible !important; }`,
+    });
+  } catch {
+    return noop; // CSS agent unavailable — capture exactly as before rather than fail the shot
+  }
+  await paintTick(page); // let layout + paint happen BEFORE the capture reads layout metrics
+  return {
+    count: paths.length,
+    restore: async () => {
+      try { await cdp.send('CSS.setStyleSheetText', { styleSheetId, text: '' }); } catch { /* sheet died with the document */ }
+      await paintTick(page);
+    },
+  };
+}
+
 /**
  * Standalone screenshot via CDP captureScreenshot (webp q70) → an on-disk path under shots/, never
  * inline bytes (Claude Code's 10-20x ImageContent tax, research 04 §4.6). `selector` clips to the
- * element's border box; `fullPage` captures beyond the viewport; `theme` temporarily emulates the
- * color-scheme then restores the session's own. Returns {ok, path, bytes, w, h} (w/h in CSS px).
+ * element's border box; `fullPage` captures beyond the viewport (forcing deferred
+ * `content-visibility:auto` sections to paint first — pass `forcePaint:false` to opt out);
+ * `theme` temporarily emulates the color-scheme then restores the session's own.
+ * Returns {ok, path, bytes, w, h, forcedPaint?}.
  */
 export async function screenshotAction(session, body) {
   const { cdp, page } = session;
   await cdp.send('Page.enable').catch(() => {});
   const theme = body.theme === 'light' || body.theme === 'dark' ? body.theme : null;
   if (theme) await page.emulateMedia({ colorScheme: theme }).catch(() => {});
+  // Only the full-page path needs it: a viewport/element capture paints what is actually on screen.
+  const wantForce = !!body.fullPage && body.forcePaint !== false;
+  const forced = wantForce ? await forcePaint(session) : { count: 0, restore: async () => {} };
   try {
     const params = { format: 'webp', quality: 70 };
     let w, h;
@@ -100,9 +182,10 @@ export async function screenshotAction(session, body) {
     const buf = Buffer.from(data, 'base64');
     const p = session.journal.alloc('shots', `shot-${Date.now()}.webp`);
     fs.writeFileSync(p, buf);
-    session.journal.log('command', { op: 'screenshot', path: p, bytes: buf.length });
-    return { ok: true, path: p, bytes: buf.length, w, h };
+    session.journal.log('command', { op: 'screenshot', path: p, bytes: buf.length, ...(forced.count ? { forcedPaint: forced.count } : {}) });
+    return { ok: true, path: p, bytes: buf.length, w, h, ...(wantForce ? { forcedPaint: forced.count } : {}) };
   } finally {
+    await forced.restore();
     if (theme) await page.emulateMedia({ colorScheme: session.colorScheme || null }).catch(() => {});
   }
 }

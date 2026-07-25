@@ -65,6 +65,7 @@ const TOOLS = [
         colorScheme: { type: 'string', enum: ['light', 'dark'], description: 'initial prefers-color-scheme' },
         themeAttr: S.string("the site's own theme ATTRIBUTE on <html> (e.g. 'data-theme') so verify can sweep it alongside emulateMedia"),
         themeClass: S.string("the site's own theme CLASS on <html> (e.g. 'dark' for Tailwind darkMode:['class']) so verify can sweep it"),
+        ignore404: { type: 'array', items: { type: 'string' }, description: "pathnames whose 404 is EXPECTED (e.g. ['/favicon.ico'] on a dev server) — verify demotes those rows to an info count and keeps them in the on-disk report. Only status-404 is demoted: a 500 or a transport failure on the same path still reports normally." },
         baseUrl: S.string('base URL so gb_goto can take relative paths'),
       },
       required: ['op'],
@@ -112,7 +113,7 @@ const TOOLS = [
   },
   {
     name: 'gb_verify',
-    description: 'THE go-to check: run this after any UI change. One call returns console errors + network taxonomy + layout pathology (overflow, occlusion, zero-size, broken images, contrast, CLS) + a11y + build-overlay, with the top findings inline and full detail + screenshots written to the session artifact dir. Optional theme/viewport sweep. ok:false means something is wrong — read the findings, fix the code, re-verify.',
+    description: 'THE go-to check: run this after any UI change. One call returns console errors + network taxonomy + layout pathology (overflow, occlusion, zero-size, broken images, contrast, CLS) + a11y + build-overlay, with the top findings inline and full detail + screenshots written to the session artifact dir. Optional theme/viewport sweep. ok:false means something is wrong — read the findings, fix the code, re-verify. Every report carries `navigation` (cold vs warm load): a WARM measurement understates first-load CLS and first-request 404s and says so — pass cold:true to re-navigate cache-cleared first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -123,14 +124,16 @@ const TOOLS = [
         axe: S.bool('run the axe-core a11y pass (default true; advisory, never flips ok)'),
         screenshots: S.bool('capture screenshots to disk (default true)'),
         themeReload: S.bool('reload per theme leg (default true) — set false to preserve in-page state across the sweep'),
+        cold: S.bool('clear the HTTP cache and re-navigate before measuring, so first-load CLS and first-request failures are captured (a warm reload silently drops them)'),
+        ignore404: { type: 'array', items: { type: 'string' }, description: 'extra expected-404 pathnames for this run, on top of the session allowlist' },
       },
       required: ['session'],
     },
   },
   {
     name: 'gb_screenshot',
-    description: 'Capture a screenshot to a FILE PATH under the session shots/ dir and return that path (never an inline image — inline images cost 10-20x the tokens in Claude Code). If you need to SEE it, Read the returned path. Options: fullPage, a selector to clip to one element, or a theme to emulate.',
-    inputSchema: { type: 'object', properties: { session: sessionArg, fullPage: S.bool('capture the whole scrollable page'), selector: S.string('clip to this element'), theme: { type: 'string', enum: ['light', 'dark'], description: 'emulate this color-scheme for the shot' } }, required: ['session'] },
+    description: 'Capture a screenshot to a FILE PATH under the session shots/ dir and return that path (never an inline image — inline images cost 10-20x the tokens in Claude Code). If you need to SEE it, Read the returned path. Options: fullPage, a selector to clip to one element, or a theme to emulate. A fullPage capture first forces `content-visibility:auto` sections to paint (they otherwise stitch in as blank paper) and reports forcedPaint:N.',
+    inputSchema: { type: 'object', properties: { session: sessionArg, fullPage: S.bool('capture the whole scrollable page'), selector: S.string('clip to this element'), theme: { type: 'string', enum: ['light', 'dark'], description: 'emulate this color-scheme for the shot' }, forcePaint: S.bool('force deferred content-visibility:auto sections to paint for a fullPage capture (default true)') }, required: ['session'] },
   },
   {
     name: 'gb_style',
@@ -233,7 +236,7 @@ function planCall(tool, a) {
       if (op === 'open') {
         if (!a.name) throw { gb: { code: 'BAD_REQUEST', message: 'gb_session open needs a `name`', field: 'name' } };
         const body = { name: a.name };
-        for (const k of ['headed', 'viewport', 'colorScheme', 'themeAttr', 'themeClass', 'baseUrl']) if (a[k] != null) body[k] = a[k];
+        for (const k of ['headed', 'viewport', 'colorScheme', 'themeAttr', 'themeClass', 'ignore404', 'baseUrl']) if (a[k] != null) body[k] = a[k];
         return { method: 'POST', route: '/sessions', body };
       }
       if (op === 'list') return { method: 'GET', route: '/sessions' };
@@ -256,8 +259,8 @@ function planCall(tool, a) {
     }
     case 'gb_observe': return { method: 'POST', route: `/sessions/${enc(needSession())}/observe`, body: { ...(a.selector ? { selector: a.selector } : {}), ...(a.limit ? { limit: Number(a.limit) } : {}), ...(a.cursor ? { cursor: Number(a.cursor) } : {}) } };
     case 'gb_read': return { method: 'POST', route: `/sessions/${enc(needSession())}/read`, body: { channel: a.channel, ...(a.since ? { since: Number(a.since) } : {}), ...(a.limit ? { limit: Number(a.limit) } : {}) } };
-    case 'gb_verify': return { method: 'POST', route: `/sessions/${enc(needSession())}/verify`, body: { ...(a.scope ? { scope: a.scope } : {}), ...(a.themes ? { themes: true } : {}), ...(a.viewports ? { viewports: true } : {}), ...(a.axe === false ? { axe: false } : {}), ...(a.screenshots === false ? { screenshots: false } : {}), ...(a.themeReload === false ? { themeReload: false } : {}) } };
-    case 'gb_screenshot': return { method: 'POST', route: `/sessions/${enc(needSession())}/screenshot`, body: { ...(a.fullPage ? { fullPage: true } : {}), ...(a.selector ? { selector: a.selector } : {}), ...(a.theme ? { theme: a.theme } : {}) } };
+    case 'gb_verify': return { method: 'POST', route: `/sessions/${enc(needSession())}/verify`, body: { ...(a.scope ? { scope: a.scope } : {}), ...(a.themes ? { themes: true } : {}), ...(a.viewports ? { viewports: true } : {}), ...(a.axe === false ? { axe: false } : {}), ...(a.screenshots === false ? { screenshots: false } : {}), ...(a.themeReload === false ? { themeReload: false } : {}), ...(a.cold ? { cold: true } : {}), ...(Array.isArray(a.ignore404) && a.ignore404.length ? { ignore404: a.ignore404 } : {}) } };
+    case 'gb_screenshot': return { method: 'POST', route: `/sessions/${enc(needSession())}/screenshot`, body: { ...(a.fullPage ? { fullPage: true } : {}), ...(a.selector ? { selector: a.selector } : {}), ...(a.theme ? { theme: a.theme } : {}), ...(a.forcePaint === false ? { forcePaint: false } : {}) } };
     case 'gb_style': {
       const s = needSession();
       if (!a.selector && !a.ref) throw { gb: { code: 'BAD_REQUEST', message: 'gb_style needs a `selector` or `ref`', field: 'selector' } };

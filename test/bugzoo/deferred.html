@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — deferred (content-visibility)</title>
+<style>
+  body { font-family: sans-serif; color: #111111; background: #ffffff; margin: 0; }
+  .band { padding: 16px; }
+  /* The WCII shape: long page built from sections that opt into `content-visibility: auto` for
+     rendering performance, with contain-intrinsic-size reserving their height. Off-screen they
+     are NOT painted — which is a deferral, not a hide: they render perfectly on scroll.
+       W1: their interactive descendants must not be reported as "invisible interactive".
+       W2: a full-page capture must force them to paint, or it stitches in blank paper. */
+  .defer { content-visibility: auto; contain-intrinsic-size: 1200px; }
+  /* Deliberately hidden, for contrast: content-visibility:hidden IS a hide primitive. */
+  .reallyhidden { content-visibility: hidden; }
+  /* Chromium only skips a content-visibility:auto subtree once it is well outside the viewport
+     (relevance is computed against the viewport expanded by ~50%), so the filler has to be tall. */
+  .filler { height: 5000px; padding: 16px; background: #ffffff; }
+  .cell { display: inline-block; width: 24px; height: 18px; margin: 1px; }
+  a { color: #0b5cc4; }
+</style>
+</head>
+<body>
+<header class="band"><h1>Deferred page</h1><p>The section far below the fold is deferred.</p></header>
+
+<div class="filler">Above-the-fold filler so the deferred section starts well past the viewport.</div>
+
+<section id="late" class="defer band">
+  <h2>Deferred section</h2>
+  <p>Rendered on scroll; skipped while off-screen.</p>
+  <!-- interactive descendants: W1 must group these into ONE info line, not 6 warnings -->
+  <a id="l1" href="/clean.html">Archived receipt 1</a>
+  <a id="l2" href="/clean.html">Archived receipt 2</a>
+  <a id="l3" href="/clean.html">Archived receipt 3</a>
+  <button id="lb1" type="button">Expand</button>
+  <button id="lb2" type="button">Download</button>
+  <button id="lb3" type="button">Share</button>
+  <!-- high-entropy paint so a forced-paint capture is unmistakably larger than a blank one -->
+  <div id="pattern"></div>
+</section>
+
+<!-- control: content-visibility:hidden IS a hide primitive (like display:none) — deliberate,
+     so nothing in here may be reported at all, deferred or otherwise. -->
+<div id="reallyhidden" class="reallyhidden band">
+  <button id="rh1" type="button">Never shown</button>
+  <a id="rh2" href="/clean.html">Never shown link</a>
+</div>
+
+<footer class="band"><p>Footer after the deferred section.</p></footer>
+
+<script>
+  // ~900 varied cells: solid colour compresses to nothing, this does not — which is what makes
+  // "did the capture actually paint this section?" measurable without decoding an image.
+  var p = document.getElementById('pattern');
+  var html = '';
+  for (var i = 0; i < 900; i++) {
+    var r = (i * 37) % 256, g = (i * 91) % 256, b = (i * 53) % 256;
+    html += '<span class="cell" style="background:rgb(' + r + ',' + g + ',' + b + ')"></span>';
+  }
+  p.innerHTML = html;
+</script>
+</body>
+</html>

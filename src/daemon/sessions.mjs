@@ -179,10 +179,29 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       // themeClass is themeAttr's sibling for the OTHER dominant mechanism: Tailwind's
       // darkMode:['class'] — a bare `dark` class on <html>, which no attribute sweep can reach.
       rec.themeClass = opts.themeClass || null;
+      // W4: pathnames whose 404 is expected (a dev server's /favicon.ico). verify demotes those
+      // rows to an info count — and ONLY when the status really is 404.
+      rec.ignore404 = Array.isArray(opts.ignore404) ? opts.ignore404.filter(Boolean).map(String)
+        : (typeof opts.ignore404 === 'string' && opts.ignore404 ? opts.ignore404.split(',').filter(Boolean) : []);
       // Nav markers scope verify's error/network report to the CURRENT page load (a prior page's
       // console errors and 4xx must not leak into this page's report).
       rec._navMark = 0;
       rec._navTs = 0;
+      // W3 load-state bookkeeping: a report has to be able to say whether it measured a COLD first
+      // load or a warm one, because a warm reload silently drops first-load findings (a negatively
+      // cached 404 is never re-requested; CLS is a first-paint race a warm load wins). `load` fires
+      // once per real DOCUMENT load — a same-document (pushState) navigation fires framenavigated
+      // without it, which is exactly the distinction we need.
+      rec._nav = { docLoads: 0, byUrl: new Map(), lastLoadUrl: null, sameDoc: false };
+      rec.page.on('load', () => {
+        try {
+          const u = rec.page.url();
+          rec._nav.docLoads += 1;
+          rec._nav.byUrl.set(u, (rec._nav.byUrl.get(u) || 0) + 1);
+          rec._nav.lastLoadUrl = u;
+          rec._nav.sameDoc = false;
+        } catch { /* torn down */ }
+      });
       rec.pendingDialog = null;
       rec._dialog = null;
       rec._inflight = null;
@@ -194,6 +213,9 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
             rec.observe.navSeq += 1;
             rec._navMark = rec.console.mark();
             rec._navTs = Date.now();
+            // Provisionally same-document; the `load` that follows a real navigation clears it.
+            // (Only meaningful once something has loaded — before that it is just the first nav.)
+            if (rec._nav.docLoads > 0 && rec.page.url() !== rec._nav.lastLoadUrl) rec._nav.sameDoc = true;
           }
         } catch { /* torn down */ }
       });

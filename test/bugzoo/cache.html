@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — cache</title>
+<!-- Every sub-resource here is served with `cache-control: public, max-age=600` and counted
+     server-side (/counts). A second navigation that re-fetches them proves the tab really is
+     running cache-disabled; one that does not proves the warm-load blind spot (W3). The favicon
+     is a 404 whose negative result the browser caches — the exact finding that vanished on the
+     WCII dogfood's second verify. -->
+<link rel="icon" href="/favicon-404.ico">
+<link rel="stylesheet" href="/count/style.css">
+<style>
+  body { font-family: sans-serif; color: #111111; background: #ffffff; margin: 16px; }
+</style>
+</head>
+<body>
+<main>
+<h1>Cache page</h1>
+<p>Sub-resources are cacheable and counted server-side.</p>
+</main>
+<script src="/count/app.js"></script>
+<!-- A renderer-initiated 404: unlike the favicon probe this one IS covered by the page session's
+     cache-disable, so it re-appears on every load — the deterministic subject for the W4 allowlist. -->
+<script src="/missing-404.js"></script>
+</body>
+</html>

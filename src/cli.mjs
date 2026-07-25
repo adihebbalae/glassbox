@@ -81,7 +81,9 @@ const watchUrlFor = (d, name) => `http://127.0.0.1:${d.port}/watch/${encodeURICo
 async function sessionOpen(name, opts) {
   if (!name) fail({ code: 'BAD_REQUEST', message: 'session name required', correction_hint: 'glassbox session open <name>' });
   const d = await ensureDaemon();
-  const { status, body } = await daemonReq(d, 'POST', '/sessions', { name, ...opts });
+  // `--ignore-404 /favicon.ico` is a leading-slash argument, so Git Bash rewrites it (see D7).
+  const req = { name, ...opts, ...(opts.ignore404 ? { ignore404: opts.ignore404.map(unmangleMsysPath) } : {}) };
+  const { status, body } = await daemonReq(d, 'POST', '/sessions', req);
   if (status !== 200) return fail(body.error);
   // The watch URL is the human-facing hook the skill promises at open (defect D8) — the MCP face
   // already returned it, the CLI silently didn't.
@@ -227,6 +229,8 @@ function buildBody(verb, pos, opts) {
       ...(opts.noAxe ? { axe: false } : {}),
       ...(opts.noShots ? { screenshots: false } : {}),
       ...(opts.noThemeReload ? { themeReload: false } : {}),
+      ...(opts.cold ? { cold: true } : {}),
+      ...(opts.ignore404?.length ? { ignore404: opts.ignore404.map(unmangleMsysPath) } : {}),
     };
     case 'read': return {
       channel: pos[1] || opts.channel || 'errors',
@@ -238,7 +242,7 @@ function buildBody(verb, pos, opts) {
     case 'select': return { ...t, values: (opts.values || '').split(',').filter(Boolean), ...timeout };
     case 'settle': return {};
     case 'eval': return { expression: pos[1] || opts.expression || '', ...(opts.awaitPromise ? { awaitPromise: true } : {}) };
-    case 'screenshot': return { ...(opts.fullPage ? { fullPage: true } : {}), ...(opts.selector ? { selector: opts.selector } : {}), ...(opts.theme ? { theme: opts.theme } : {}) };
+    case 'screenshot': return { ...(opts.fullPage ? { fullPage: true } : {}), ...(opts.selector ? { selector: opts.selector } : {}), ...(opts.theme ? { theme: opts.theme } : {}), ...(opts.noForcePaint ? { forcePaint: false } : {}) };
     case 'wait': {
       const f = {};
       if (opts.selector) f.selector = opts.selector;
@@ -266,10 +270,12 @@ function printResult(verb, r) {
   }
   if (verb === 'verify') {
     const c = r.counts || {};
-    console.log(`verify ${r.ok ? 'OK' : 'ISSUES'} — ${r.settled ? 'settled' : 'UNSETTLED'} at ${r.url}`);
+    const nav = r.navigation ? ` [${r.navigation.kind.toUpperCase()} load]` : '';
+    console.log(`verify ${r.ok ? 'OK' : 'ISSUES'} — ${r.settled ? 'settled' : 'UNSETTLED'}${nav} at ${r.url}`);
     // `consoleErrors`, not `console`: these are console.error entries since the last navigation,
     // not the whole console buffer (dogfood observation — the short name invited misreading).
-    console.log(`  counts: consoleErrors=${c.consoleErrors} pageerr=${c.pageErrors} net(failed=${c.netFailed} http=${c.netHttpError} hang=${c.netHanging} mixed=${c.netMixed}) a11y=${c.a11y} layout=${c.layout}`);
+    console.log(`  counts: consoleErrors=${c.consoleErrors} pageerr=${c.pageErrors} net(failed=${c.netFailed} http=${c.netHttpError} hang=${c.netHanging} mixed=${c.netMixed}) a11y=${c.a11y} layout=${c.layout}`
+      + `${c.ignored404 ? ` ignored404=${c.ignored404}` : ''}${c.deferred ? ` deferred=${c.deferred}` : ''}`);
     for (const f of r.findings || []) console.log(`  [${f.severity}/${f.channel}] ${f.summary}`);
     const a = r.artifacts || {};
     console.log(`  report: ${a.report}`);
@@ -299,7 +305,11 @@ function printResult(verb, r) {
     for (const c of r.console || []) console.log(`  ${c.kind}: ${c.text}`);
     return;
   }
-  if (verb === 'screenshot') { console.log(`screenshot -> ${r.path}  (${r.bytes} bytes, ${r.w}x${r.h})`); return; }
+  if (verb === 'screenshot') {
+    const fp = r.forcedPaint ? `, forced paint on ${r.forcedPaint} deferred container${r.forcedPaint > 1 ? 's' : ''}` : '';
+    console.log(`screenshot -> ${r.path}  (${r.bytes} bytes, ${r.w}x${r.h}${fp})`);
+    return;
+  }
   if (verb === 'wait') {
     if (r.slept != null) { console.log(`wait — slept ${r.slept}ms (${r.tookMs}ms)`); return; }
     console.log(`wait — ${r.matched ? 'MATCHED' : 'timed out (matched:false)'} in ${r.tookMs}ms`);
@@ -310,7 +320,12 @@ function printResult(verb, r) {
   if (r.forced) bits.push(`FORCED${r.occludedBy ? ` (through ${r.occludedBy})` : ''}`);
   if (r.note) bits.push(r.note);
   if (r.urlChanged) bits.push(`url→ ${r.url}`);
-  if (r.console?.length) bits.push(`${r.console.length} console`);
+  // "3 console" then verify's "consoleErrors=1" read as lost messages (both dogfood logs). An
+  // action's console delta is EVERY level emitted during that action; say so in the label.
+  if (r.console?.length) {
+    const errs = r.console.filter((c) => c.kind === 'error' || c.kind === 'pageerror').length;
+    bits.push(`${r.console.length} console msg${r.console.length > 1 ? 's' : ''}${errs ? ` (${errs} error${errs > 1 ? 's' : ''})` : ''}`);
+  }
   if (r.dialog) bits.push(`DIALOG ${r.dialog.type}: ${JSON.stringify(r.dialog.message)}`);
   bits.push(`${r.tookMs}ms`);
   console.log(`${verb} ok — ${bits.join(', ')}`);
@@ -507,6 +522,9 @@ function parseArgs(argv) {
     else if (a === '--no-shots') opts.noShots = true;
     else if (a === '--no-theme-reload') opts.noThemeReload = true;
     else if (a === '--force') opts.force = true;
+    else if (a === '--cold') opts.cold = true;
+    else if (a === '--no-force-paint') opts.noForcePaint = true;
+    else if (a === '--ignore-404') (opts.ignore404 ||= []).push(argv[++i]); // repeatable
     else if (a === '--full') opts.fullPage = true;
     else if (a === '--hydration') opts.hydration = true;
     else if (a === '--await') opts.awaitPromise = true;
@@ -528,6 +546,7 @@ SESSIONS
   daemon start|stop|status
   session open <name> [--headed] [--viewport WxH] [--color light|dark] [--base-url URL]
                       [--theme-attr ATTR] [--theme-class CLASS]   (the site's own theme switch)
+                      [--ignore-404 /path]                        (repeatable; expected 404s)
   session ls                  session rm <name>
   session resize <name> WxH   (alias: set-viewport — no need to re-open + re-seed for mobile)
   artifacts -s <session>      (list on-disk shots/reports/net/journal)
@@ -546,8 +565,12 @@ NAVIGATE + ACT   (all take -s <session> or GLASSBOX_SESSION)
 OBSERVE + VERIFY
   observe [--selector CSS] [--limit N] [--cursor N]
   verify [--scope CSS] [--themes] [--viewports] [--no-axe] [--no-shots] [--no-theme-reload]
+         [--cold] [--ignore-404 /path]
+      --cold re-navigates cache-cleared first: first-load CLS and first-request 404s are only
+      honest on a COLD load. Every report says which one it measured.
   read [console|network|errors|overlay] [--since N] [--limit N]
-  screenshot|shot [--full] [--selector CSS] [--theme light|dark]     (writes a path; never inline)
+  screenshot|shot [--full] [--selector CSS] [--theme light|dark] [--no-force-paint]
+      --full forces content-visibility:auto sections to paint first (else they stitch in blank)
   settle                       (block until the page quiesces)
 
 DEBUG   (white-box; -s <session>)
