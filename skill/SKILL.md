@@ -17,7 +17,9 @@ Open ONE session named for your task. Parallel agents/subagents each open their 
 gb_session {op:"open", name:"checkout-form"}      → info + a watchUrl for humans
 ```
 
-Options: `headed:true` (visible window — for hover/tooltip/GPU-sensitive checks), `viewport:{width,height}`, `colorScheme:"dark"`, `themeAttr:"data-theme"` (your site's own theme switch, so verify can sweep it), `baseUrl` (then `gb_goto` takes relative paths).
+Options: `headed:true` (visible window — for hover/tooltip/GPU-sensitive checks), `viewport:{width,height}`, `colorScheme:"dark"`, `baseUrl` (then `gb_goto` takes relative paths), and your site's own theme switch so `verify` can sweep it — `themeAttr:"data-theme"` (attribute) or `themeClass:"dark"` (**Tailwind `darkMode:['class']`** — the common one).
+
+Need a different viewport later? Resize in place instead of opening a second session: `gb_session {op:"resize", name:"checkout-form", viewport:{width:390,height:844}}` (CLI: `glassbox session resize checkout-form 390x844`).
 
 Close it when done: `gb_session {op:"close", name:"checkout-form"}`. To reap everything (daemon + all chromium) after a run: `glassbox kill-all` (CLI).
 
@@ -31,6 +33,8 @@ gb_verify {session}          ← THE tool. one call = console + network + layout
 ```
 
 `gb_verify` returns `ok` plus `counts` and the top `findings` (each a sentence you can act on, e.g. `"2 requests failed: GET /api/cart → net::ERR_CONNECTION_REFUSED"`). `ok:false` means fix something. Full detail + screenshots are at the returned `artifacts.report` path. Add `themes:true` to sweep light+dark, `viewports:true` for mobile+desktop, `scope:"#cart"` to audit one subtree.
+
+`counts.consoleErrors` is `console.error` entries **since the last navigation** — not the whole console buffer (use `gb_read {channel:"console"}` for that). The theme sweep **reloads the page per leg** so a site that reads `prefers-color-scheme` once at boot is actually re-themed (pass `themeReload:false` to keep in-page state); if the light and dark screenshots come out byte-identical, that is reported as a finding rather than left to look like a passing dark-mode check.
 
 Pull one channel at a time with `gb_read {session, channel}`:
 - `errors` — console.error + uncaught exceptions, source-map-remapped to your original files
@@ -49,23 +53,29 @@ gb_act {session, action:"type", selector:"#email", value:"a@b.com", submit:true}
 
 `gb_act` is one tool; `action` ∈ click|dblclick|hover|type|press|scroll|drag|upload|select. Target by `selector` (preferred) | `testid` | `role`+`name` | `text` | `ref`. It returns a **delta** (url change, console, mutations, settled) — not a page dump.
 
+**A click you can't make, it won't make.** If something covers the target at its hit point, the click fails with `ACT_OCCLUDED` naming the covering element (`occludedBy`) — that is a real bug in your UI, the same one `gb_verify` reports as an occlusion, not a Glassbox quirk. Fix the z-order/close the overlay, or pass `force:true` to dispatch at that point anyway; a forced action is stamped `forced:true` (+ `occludedBy`) in the delta and the journal, so it can never read like an ordinary click.
+
 Only reach for `gb_observe` when you DON'T know the DOM: it returns a distilled tree with numbered refs (`e1`, `e2`, …) as plain text (~1.4k tokens, not 95k). Refs die on the next DOM mutation — if you get a `STALE_REF` error, just re-observe (the error says so).
 
 ## 4. Debug recipes (white-box)
 
 | Symptom | Move |
 | --- | --- |
-| Button does nothing | `gb_debug {session, op:"listeners", selector:"#btn"}` — empty list = no handler wired |
+| Button does nothing | `gb_debug {session, op:"listeners", selector:"#btn"}` — read the `verdict`, not just the empty array (see below) |
 | Wrong / invisible color | `gb_style {session, selector:"#el"}` — computed color, contrast ratio, and the cascade with each rule marked won ✓ / overridden ✗ (with real specificity) |
 | Handler logic is wrong | `gb_debug {op:"break", file:"cart.js", line:42}` → trigger it → `gb_debug {op:"inspect"}` (locals) → `gb_debug {op:"eval", expression:"total*qty"}` → `gb_debug {op:"step", mode:"over"}` → `gb_debug {op:"resume"}` |
 | Code you expected never ran | `gb_coverage {op:"start"}` → exercise the UI → `gb_coverage {op:"stop"}` → report lists functions with count 0 |
 | Read/compute app state | `gb_eval {session, expression:"window.store.getState().cart"}` — returns the value + any console it logged |
+
+**Reading `listeners` correctly (it is easy to get a wrong verdict here):** the result echoes `element` (the node it actually inspected), `matchCount` + a `warning` when your selector matched several nodes — a bare `"button"` inspects the FIRST button in the DOM, often a hidden mobile hamburger — and `delegated`, the ancestors that DO carry handlers. An empty `listeners` array alone does **not** mean "no handler wired": React 17+ attaches every synthetic handler at the root container, so the honest answer is in `verdict` — either *"no direct listeners; ancestor #root has delegated click…"* (the button probably works; go read the component) or *"no direct listeners and no delegated listeners on any ancestor (dead element)"* (now it's dead). Target precisely with a `ref` from `gb_observe` when the selector is ambiguous.
 
 **PAUSED lane semantics (important):** while a breakpoint is paused, `state / inspect / eval / step / resume / pause / screenshot / listeners` all work — but **every non-debug tool returns a `PAUSED` error**. That's not a failure; it's telling you to `gb_debug {op:"resume"}` first (or keep debugging). A paused handler also blocks the action that triggered it — expected; resume to let it finish.
 
 ## 5. Waiting, screenshots, artifacts
 
 - `gb_wait {session, for:{selector:"#done"}}` — targeted wait; `for` is one of `{selector}|{text}|{url}|{hydration:true}|{timeout:ms}`. It **never throws on timeout** — it returns `matched:false` so you branch.
+  - `{url:"/dashboard"}` (leading slash) matches the **pathname**: `/dashboard` and `/dashboard/settings`, never `/dashboardx`. Without the slash it's a substring of the full href (`{url:"dashboard"}`); `*` globs. From the CLI **in Git Bash**, `--url /dashboard` is rewritten by MSYS into a Windows path before Node sees it — Glassbox un-mangles it, but `--url dashboard` is the bulletproof form.
+  - `{timeout:ms}` is a plain sleep: it owns its own budget, always succeeds after the duration, and exits 0 (safe in an `&&` chain).
 - `gb_screenshot {session}` — writes a webp to the shots/ dir and returns the PATH. `fullPage`, `selector` (clip to one element), `theme` options. To actually see it, `Read` the path.
 - Artifacts pile up per session (shots/reports/net/journal). List them from the CLI: `glassbox artifacts -s <session>`.
 
@@ -100,7 +110,8 @@ gb_goto    {session:"login-fix", url:"http://localhost:3000/login"}
 gb_verify  {session:"login-fix"}
    → ok:false, findings:["console.error: Cannot read properties of null (reading 'value') (login.js:12)"]
 gb_debug   {session:"login-fix", op:"listeners", selector:"#login"}
-   → [] (empty)  ← the submit button was never wired
+   → count:0, delegated:[], verdict:"no direct listeners and no delegated listeners on any ancestor (dead element)"
+     ← the submit button really was never wired
 # …you fix login.js: attach the click handler…
 gb_verify  {session:"login-fix"}
    → ok:true
@@ -112,6 +123,7 @@ gb_session {op:"close", name:"login-fix"}
 
 ## Notes
 
-- Structured errors are self-correcting: a `STALE_REF`, `PAUSED`, `NO_SESSION`, or `NO_TARGET` result carries the code, a correction hint, and (for bad names/refs) the list of valid values — read it and retry, don't give up.
+- Structured errors are self-correcting: a `STALE_REF`, `PAUSED`, `NO_SESSION`, `NO_TARGET`, or `ACT_OCCLUDED` result carries the code, a correction hint, and (for bad names/refs/coverers) the specifics — read it and retry, don't give up.
+- Noise discipline in `verify`: while a modal is open its backdrop makes everything behind it unreachable BY DESIGN, so that whole batch collapses to one info line ("modal open; N interactive elements behind backdrop"); interactive elements hidden by an ancestor's `visibility:hidden` (Tailwind `.invisible` on a closed drawer) are one grouped warning naming that ancestor. Both are facts, not floods.
 - A low error count is weak evidence of quality; verify after EVERY change, not once at the end.
 - Cleanup: `glassbox kill-all` reaps the daemon and every Glassbox-launched Chromium, leaving zero orphans.

@@ -78,6 +78,9 @@ lifecycle). White-box features go through `context.newCDPSession(page)` raw CDP.
   are first-class action targets alongside refs (no surveyed tool has this; genuine edge).
 - Refs invalidate on DOM mutation → structured "ref died, re-observe" error, never a silent
   mis-click. Screenshots are on-demand attachments (file paths), not per-step defaults.
+- **An action never lies about what a user could do**: a click whose hit point belongs to another
+  element fails `ACT_OCCLUDED` (same rule the layout audit uses, so `act` and `verify` can never
+  contradict each other); `force` is an explicit opt-in and is stamped `forced:true` in the delta.
 - Every action returns a **delta**: url change, console events since, dialog/overlay-blocking
   state (never let a native dialog hang a call — playwright-mcp #595), and a short mutation
   summary. Verification is structural, not optional (research 08).
@@ -106,9 +109,12 @@ result rather than a hang. Per-tab setup: `Network.setBypassServiceWorker(true)`
   buffered `layout-shift` PerformanceObserver with source nodes.
 - **a11y**: vendored axe-core, scoped by default, structural dedup (card grids), contrast rule
   cost-aware.
-- **Sweeps**: viewport set (mobile/tablet/desktop) × theme — driving *both*
-  `emulateMedia(colorScheme)` *and* the site's own `data-theme`/localStorage mechanism (one
-  does not test the other; stale-persisted-theme is a real bug class).
+- **Sweeps**: viewport set (mobile/tablet/desktop) × theme — driving *all three* of
+  `emulateMedia(colorScheme)`, the site's own `data-theme` attribute, and its root **class**
+  (Tailwind `darkMode:['class']`); one does not test the others, and stale-persisted-theme is a
+  real bug class. Each theme leg **reloads** after setting emulation (a site that reads
+  `prefers-color-scheme` once at module load cannot see a runtime flip — the sweep would silently
+  screenshot the light theme twice), and byte-identical light/dark output is itself a finding.
 - **Overlay reader**: generic open-shadow-root walker for `<vite-error-overlay>`, Astro's
   overlay, `<nextjs-portal>` (all open shadow DOM — research 07) so build errors surface as
   structured fields, not screenshots of red boxes.

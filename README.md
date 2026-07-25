@@ -94,8 +94,9 @@ glassbox dev --cmd "npm run dev" --cwd . -s dev
 
 | Command | What it does |
 | --- | --- |
-| `session open <name> [--headed] [--viewport WxH] [--color light\|dark] [--theme-attr ATTR] [--base-url URL]` | Create an isolated session (auto-starts the daemon) |
+| `session open <name> [--headed] [--viewport WxH] [--color light\|dark] [--theme-attr ATTR] [--theme-class CLASS] [--base-url URL]` | Create an isolated session (auto-starts the daemon); prints its watch URL |
 | `session ls` / `session rm <name>` | List / destroy |
+| `session resize <name> WxH` | Resize a live session (mobile checks without re-opening and re-seeding) |
 | `daemon start\|stop\|status` | Explicit daemon control (rarely needed) |
 | `artifacts -s <session>` | List the on-disk shots / reports / net logs / journal |
 | `kill-all` | Reap the daemon, every Glassbox Chromium, and any orphaned dev server |
@@ -106,19 +107,19 @@ glassbox dev --cmd "npm run dev" --cwd . -s dev
 | Command | What it does |
 | --- | --- |
 | `goto <url>` | Navigate + settle, returns a delta |
-| `click\|dblclick\|hover <css>` | Act with Playwright actionability, then settle |
+| `click\|dblclick\|hover <css> [--force]` | Act with Playwright actionability **plus a hit-point check**, then settle. A covered target fails `ACT_OCCLUDED` naming the coverer; `--force` dispatches anyway and stamps `forced:true` |
 | `type <text> --selector CSS [--submit]` · `press <key>` | Fill / key input |
 | `scroll [--to top\|bottom\|CSS\|eN] [--by PX]` | Scroll |
 | `drag --from CSS --to CSS` · `upload --files a,b` · `select --values x,y` | The rest of the input verbs |
 | `dialog accept\|dismiss [--text T]` | Answer a native dialog (they are stashed, never left hanging) |
 | `eval "<expr>" [--await]` | Evaluate in the page; returns value + console it emitted |
-| `wait [--selector CSS \| --text T \| --url U \| --hydration \| --sleep MS]` | Targeted wait; never throws, returns `matched:false` |
+| `wait [--selector CSS \| --text T \| --url U \| --hydration \| --sleep MS]` | Targeted wait; never throws, returns `matched:false`. `--url /path` matches the pathname at a segment boundary; `--sleep` always succeeds after the duration |
 
 **Observe & verify**
 
 | Command | What it does |
 | --- | --- |
-| `verify [--scope CSS] [--themes] [--viewports] [--no-axe] [--no-shots]` | The one-call bundle |
+| `verify [--scope CSS] [--themes] [--viewports] [--no-axe] [--no-shots] [--no-theme-reload]` | The one-call bundle. `--themes` reloads per leg (boot-time theme readers) and drives `--theme-attr`/`--theme-class`; identical light/dark shots are themselves a finding |
 | `read console\|network\|errors\|overlay [--since N]` | One channel at a time, cursored, source-map-remapped |
 | `observe [--selector CSS] [--limit N]` | Distilled DOM+AX tree with numbered refs (~1.4k tokens, not 95k) |
 | `screenshot [--full] [--selector CSS] [--theme light\|dark]` | Writes a webp, prints the **path** |
@@ -131,7 +132,7 @@ glassbox dev --cmd "npm run dev" --cwd . -s dev
 | `debug break --file app.js --line N [--condition EXPR]` | Breakpoint, snapped to the first valid location at/after the line |
 | `debug state \| inspect [--frame N] \| eval "<expr>"` | Frames / locals-with-values / compute on the frozen frame |
 | `debug step [over\|into\|out] \| resume \| pause \| screenshot` | Stepping and a shot of the frozen page |
-| `debug listeners <css>` | The dead-button question: empty list = no handler wired |
+| `debug listeners <css>` | The dead-button question, answered honestly: echoes the node it inspected, warns when the selector matched several, and checks ancestors for React-style delegation before calling anything dead |
 | `debug coverage-start` … `coverage-stop` | JS + CSS coverage; `count:0` = "this never ran" |
 | `style <css>` | Why it looks wrong: computed styles, contrast, cascade with real specificity, ✓won / ✗overridden |
 
@@ -241,8 +242,14 @@ isolation is proven end-to-end in `test/m8.mjs`.
 
 **A structured error is a next call, not a dead end.** `STALE_REF` (re-observe), `NO_SESSION`
 (lists valid names), `NO_TARGET` (with the blocking element when Playwright knows it), `ACT_TIMEOUT`
-(with the failed actionability check), `DEV_NO_URL` (with the last 20 lines of the dev server's
-output). Read the `correction_hint` and retry.
+(with the failed actionability check), `ACT_OCCLUDED` (with the element covering your target — that
+one is usually a real bug in the page; `--force` is the opt-out and is recorded), `DEV_NO_URL` (with
+the last 20 lines of the dev server's output). Read the `correction_hint` and retry.
+
+**`ACT_OCCLUDED` on something that looks fine.** The check runs at the CURRENT scroll position with
+the same rule `verify` uses, so the two can never contradict each other: if a fixed legend/overlay
+sits on the target's centre right now, a user can't click it right now. Scroll it clear, close the
+overlay, or `--force`.
 
 **`verify` says `settled:false`.** The cap (8s, `GLASSBOX_SETTLE_CAP_MS`) elapsed with a phase still
 busy; the report names it (`why:['network']` = a request never finished, `['astro']` = an island
@@ -256,14 +263,17 @@ never hydrated). The result is still complete — it just wasn't quiet.
 ## Tests
 
 ```bash
-npm test              # all 8 milestone proofs, 184 checks against a real browser (~15 min)
+npm test              # all 9 proofs, 214 checks against a real browser (~15 min)
 npm run test:m8       # the system-level pass: parallel stress, seed sweep, artifact contract
+npm run test:m9       # defect round 1 regressions (each check fails on the pre-fix build)
 npm run test:live     # OPTIONAL, not in npm test: live check against a real Astro project
 ```
 
 Each proof drives the real CLI/daemon against a real Chromium, and every one ends by asserting
 `kill-all` leaves zero orphan processes. `test/bugzoo/` is the seeded-bug site the proofs verify
-against — 17 deliberate bug classes plus a clean page as the false-positive check.
+against — 17 deliberate bug classes plus a clean page as the false-positive check, and six pages
+seeded from the first field-defect round (occluded-but-clickable control, boot-time theme, Tailwind
+class theme, modal backdrop, invisible drawer, delegated listeners).
 
 ## Known limits (v1)
 
