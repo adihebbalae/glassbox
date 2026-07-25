@@ -57,14 +57,53 @@ project lives here, its own repo (`main`).
       React-fiber `onClick` source for `listeners` (still points at react-dom internals) — both
       logged as backlog by the defect report itself.
 
-## Known limitations (v0.1.0 + defect round 1)
-- display:none treated as deliberate (mobile-nav lesson) — an accidentally-hidden element
-  won't be flagged; no expected-404 allowlist yet; win32-only proven; parallelism tested
-  at 4 sessions; live-wcii check is manual, not CI-gated.
+- [x] Phase 7 — **Defect round 2 (WCII dogfood, 2026-07-24 evening)**. A visual-QA pass of the WCII
+      building page (long Astro "case file" built from `content-visibility: auto` sections, theme
+      driven by both `prefers-color-scheme` and `data-theme`) filed 4 defects + observations
+      (`docs/defects-2026-07-24-wcii-dogfood.md`). All 4 fixed, pinned by `test/m10.mjs` (19/19).
+      Suite is now **233/233** across 10 proofs.
+
+      | # | Defect | Fix | Where |
+      | --- | --- | --- | --- |
+      | W1 | `content-visibility:auto` descendants reported as "invisible interactive" (10 warnings for links that render fine on scroll) | third bucket — **deferred**: one info line per container ("N interactive elements in deferred section …; scroll to audit"), never counted as pathology. `content-visibility:hidden` is treated as a deliberate hide, like display:none | `daemon/layout-audit.mjs`, `daemon/verify.mjs` |
+      | W2 | `screenshot --full` stitched blank paper over deferred sections (a *misleading primary artifact*) | a full capture forces every `content-visibility:auto` subtree to paint first via an INSPECTOR stylesheet (no DOM node → no MutationObserver noise, refs survive), reports `forcedPaint:N`, restores exactly; `forcePaint:false` opts out | `daemon/extras.mjs` |
+      | W3 | a warm reload silently dropped cold-load findings (favicon 404 + CLS 0.1734 → 0) | every report carries `navigation:{kind,reason,documentLoads,urlLoads}`; a warm measurement emits an explicit understatement warning; `cold:true` (`--cold`) clears the HTTP cache and re-navigates before measuring | `daemon/verify.mjs`, `daemon/sessions.mjs` |
+      | W4 | no expected-404 allowlist — `/favicon.ico` headlined every cold verify | `ignore404` (session option + per-run `--ignore-404`, repeatable): matching **status-404** rows demote to an info count plus the browser's matching resource-load console error; kept on disk under `network.ignored404`; a 500 or transport failure on the same path still reports | `daemon/verify.mjs`, `daemon/sessions.mjs`, `cli.mjs`, `mcp-shim.mjs` |
+      | obs | `goto`'s "3 console" vs verify's "console=1" | the action delta now says `5 console msgs (4 errors)`; verify's label was already fixed in round 1 | `cli.mjs` |
+
+      **Cache-disable investigation (W3's open question) — answered, no bonus defect.** Measured with
+      a counting fixture (`test/bugzoo/cache.html` + `/counts`, asserted in m10 W3d/W3e):
+      `Network.setCacheDisabled(true)` IS applied and DOES work — a `max-age=600` script is re-fetched
+      on **every** navigation (4 loads → 4 server hits). What escapes it is (a) Chrome's `/favicon.ico`
+      probe, issued by the BROWSER process outside the page session's Network domain and negatively
+      cached per profile (4 loads → 3 requests, and none at all in a later session), and (b) CLS,
+      which is a race between first paint and a resource arriving — a warm load wins it even with a
+      cold cache. Neither is reachable by a flag, which is exactly why W3's answer is *label + warn +
+      offer a real cold run* rather than "turn the cache off harder".
+
+      New bug-zoo pages: `deferred.html` (content-visibility:auto section + a content-visibility:hidden
+      control), `cache.html` (counted cacheable sub-resources, a 404 favicon and a renderer-initiated
+      404); `serve.mjs` gained `/count/*`, `/counts`, `/reset-counts`, `/favicon-404.ico`.
+      **Deferred:** force-painting deferred sections during the AUDIT pass (W1 stretch) — forcing
+      layout mid-measurement would inject `layout-shift` entries into the buffered CLS observer and
+      corrupt the very number the same pass reports, so deferred sections stay "scroll to audit";
+      and the "theme responded without reload" detection (round-1 D2 sharpening) — the sweep would
+      have to measure both ways to know, which doubles every sweep to save one reload.
+
+## Known limitations (v0.1.0 + defect rounds 1-2)
+- display:none (and content-visibility:hidden) treated as deliberate — an accidentally-hidden
+  element won't be flagged; win32-only proven; parallelism tested at 4 sessions; live-wcii check
+  is manual, not CI-gated.
 - While ANY modal is open, occlusion warnings outside it are suppressed (counted, not listed) —
   a genuine z-order bug elsewhere on the page hides behind that one info line until the modal closes.
 - The click hit-point probe covers click/dblclick; `hover` still relies on Playwright's own
   actionability. React-Flow edge hit-areas and thin SVG groups remain permanent low-value warnings.
+- `verify --cold` is a cold CACHE, not a cold PROFILE: cookies/localStorage survive (deliberately —
+  it must not log you out), and Chrome's browser-process favicon cache is out of CDP's reach, so a
+  first-visit `/favicon.ico` 404 only ever appears once per browser. A fresh session is the only
+  true cold start for that one.
+- Contrast/occlusion INSIDE a `content-visibility:auto` section are not audited until it is scrolled
+  into view (the info line says so).
 - `verify --themes` reloads per leg, so in-page state (filled forms, opened panels) is lost unless
   `themeReload:false` is passed.
 

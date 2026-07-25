@@ -94,7 +94,7 @@ glassbox dev --cmd "npm run dev" --cwd . -s dev
 
 | Command | What it does |
 | --- | --- |
-| `session open <name> [--headed] [--viewport WxH] [--color light\|dark] [--theme-attr ATTR] [--theme-class CLASS] [--base-url URL]` | Create an isolated session (auto-starts the daemon); prints its watch URL |
+| `session open <name> [--headed] [--viewport WxH] [--color light\|dark] [--theme-attr ATTR] [--theme-class CLASS] [--ignore-404 /path] [--base-url URL]` | Create an isolated session (auto-starts the daemon); prints its watch URL |
 | `session ls` / `session rm <name>` | List / destroy |
 | `session resize <name> WxH` | Resize a live session (mobile checks without re-opening and re-seeding) |
 | `daemon start\|stop\|status` | Explicit daemon control (rarely needed) |
@@ -119,10 +119,10 @@ glassbox dev --cmd "npm run dev" --cwd . -s dev
 
 | Command | What it does |
 | --- | --- |
-| `verify [--scope CSS] [--themes] [--viewports] [--no-axe] [--no-shots] [--no-theme-reload]` | The one-call bundle. `--themes` reloads per leg (boot-time theme readers) and drives `--theme-attr`/`--theme-class`; identical light/dark shots are themselves a finding |
+| `verify [--scope CSS] [--themes] [--viewports] [--cold] [--ignore-404 /path] [--no-axe] [--no-shots] [--no-theme-reload]` | The one-call bundle. `--themes` reloads per leg (boot-time theme readers) and drives `--theme-attr`/`--theme-class`; identical light/dark shots are themselves a finding. Every report labels the load state it measured (**cold vs warm**); `--cold` clears the cache and re-navigates first |
 | `read console\|network\|errors\|overlay [--since N]` | One channel at a time, cursored, source-map-remapped |
 | `observe [--selector CSS] [--limit N]` | Distilled DOM+AX tree with numbered refs (~1.4k tokens, not 95k) |
-| `screenshot [--full] [--selector CSS] [--theme light\|dark]` | Writes a webp, prints the **path** |
+| `screenshot [--full] [--selector CSS] [--theme light\|dark] [--no-force-paint]` | Writes a webp, prints the **path**. `--full` forces `content-visibility:auto` sections to paint first, else they stitch in blank |
 | `settle` | Block until the page quiesces |
 
 **Debug (white-box)**
@@ -251,6 +251,13 @@ the same rule `verify` uses, so the two can never contradict each other: if a fi
 sits on the target's centre right now, a user can't click it right now. Scroll it clear, close the
 overlay, or `--force`.
 
+**`verify` came back clean and I don't believe it.** Check `navigation.kind` in the report. A *warm*
+load (a second visit to the same URL in that session) cannot see first-load findings: CLS is a
+first-paint race a warm load wins, and a negatively-cached 404 is never re-requested. Re-run with
+`--cold` (clears the HTTP cache and re-navigates) or in a fresh session. Sub-resources are always
+re-fetched — every tab runs with `Network.setCacheDisabled(true)` — but Chrome's browser-process
+favicon cache is outside CDP's reach, which is why `/favicon.ico` 404s only ever show up once.
+
 **`verify` says `settled:false`.** The cap (8s, `GLASSBOX_SETTLE_CAP_MS`) elapsed with a phase still
 busy; the report names it (`why:['network']` = a request never finished, `['astro']` = an island
 never hydrated). The result is still complete — it just wasn't quiet.
@@ -263,17 +270,19 @@ never hydrated). The result is still complete — it just wasn't quiet.
 ## Tests
 
 ```bash
-npm test              # all 9 proofs, 214 checks against a real browser (~15 min)
+npm test              # all 10 proofs, 233 checks against a real browser (~15 min)
 npm run test:m8       # the system-level pass: parallel stress, seed sweep, artifact contract
 npm run test:m9       # defect round 1 regressions (each check fails on the pre-fix build)
+npm run test:m10      # defect round 2 regressions (deferred content, cold/warm loads, 404 allowlist)
 npm run test:live     # OPTIONAL, not in npm test: live check against a real Astro project
 ```
 
 Each proof drives the real CLI/daemon against a real Chromium, and every one ends by asserting
 `kill-all` leaves zero orphan processes. `test/bugzoo/` is the seeded-bug site the proofs verify
-against — 17 deliberate bug classes plus a clean page as the false-positive check, and six pages
-seeded from the first field-defect round (occluded-but-clickable control, boot-time theme, Tailwind
-class theme, modal backdrop, invisible drawer, delegated listeners).
+against — 17 deliberate bug classes plus a clean page as the false-positive check, plus the pages
+seeded from the two field-defect rounds (occluded-but-clickable control, boot-time theme, Tailwind
+class theme, modal backdrop, invisible drawer, delegated listeners, deferred `content-visibility`
+sections, and a request-counting cache page).
 
 ## Known limits (v1)
 

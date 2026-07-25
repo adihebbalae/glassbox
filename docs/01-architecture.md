@@ -106,7 +106,23 @@ result rather than a hang. Per-tab setup: `Network.setBypassServiceWorker(true)`
 - **Layout pathology** (one injected JS payload, one round-trip): horizontal overflow,
   occlusion via `elementFromPoint`, `Element.checkVisibility()`, zero-size targets, broken
   images (`complete && naturalWidth===0`), effective fg/bg contrast pairs (spike 1), CLS via
-  buffered `layout-shift` PerformanceObserver with source nodes.
+  buffered `layout-shift` PerformanceObserver with source nodes. Unpaintedness is GRADED, never
+  lumped: `display:none` / `content-visibility:hidden` = deliberate (silent); an ancestor's
+  `visibility:hidden` = one grouped warning naming that ancestor; `content-visibility:auto` =
+  **deferred**, an info line only (it paints on scroll — a performance primitive, not a hide);
+  a modal backdrop = one info line for everything behind it.
+- **Load state**: every report says whether it measured a COLD or a WARM load, because a warm one
+  cannot see first-load CLS or a negatively-cached 404, and reports the warm caveat as a finding.
+  `cold:true` clears the HTTP cache and re-navigates. Per-tab `Network.setCacheDisabled(true)` is
+  verified to work for every renderer-initiated request; Chrome's browser-process favicon cache is
+  outside CDP's reach and is documented as a limit rather than pretended away.
+- **Expected-404 allowlist**: `ignore404` demotes matching **status-404** rows to an info count
+  (and the browser's matching resource-load console error), never any other status, and never
+  deletes them from the on-disk report.
+- **Screenshots must paint what they stitch**: a full-page capture first forces
+  `content-visibility:auto` subtrees to render (via an INSPECTOR stylesheet — not a DOM node, so
+  the MutationObserver never fires and observe refs survive), since `captureBeyondViewport` alone
+  stitches blank paper over them.
 - **a11y**: vendored axe-core, scoped by default, structural dedup (card grids), contrast rule
   cost-aware.
 - **Sweeps**: viewport set (mobile/tablet/desktop) × theme — driving *all three* of

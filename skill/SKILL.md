@@ -17,7 +17,7 @@ Open ONE session named for your task. Parallel agents/subagents each open their 
 gb_session {op:"open", name:"checkout-form"}      → info + a watchUrl for humans
 ```
 
-Options: `headed:true` (visible window — for hover/tooltip/GPU-sensitive checks), `viewport:{width,height}`, `colorScheme:"dark"`, `baseUrl` (then `gb_goto` takes relative paths), and your site's own theme switch so `verify` can sweep it — `themeAttr:"data-theme"` (attribute) or `themeClass:"dark"` (**Tailwind `darkMode:['class']`** — the common one).
+Options: `headed:true` (visible window — for hover/tooltip/GPU-sensitive checks), `viewport:{width,height}`, `colorScheme:"dark"`, `baseUrl` (then `gb_goto` takes relative paths), your site's own theme switch so `verify` can sweep it — `themeAttr:"data-theme"` (attribute) or `themeClass:"dark"` (**Tailwind `darkMode:['class']`** — the common one) — and `ignore404:["/favicon.ico"]` for 404s you already know about.
 
 Need a different viewport later? Resize in place instead of opening a second session: `gb_session {op:"resize", name:"checkout-form", viewport:{width:390,height:844}}` (CLI: `glassbox session resize checkout-form 390x844`).
 
@@ -34,7 +34,11 @@ gb_verify {session}          ← THE tool. one call = console + network + layout
 
 `gb_verify` returns `ok` plus `counts` and the top `findings` (each a sentence you can act on, e.g. `"2 requests failed: GET /api/cart → net::ERR_CONNECTION_REFUSED"`). `ok:false` means fix something. Full detail + screenshots are at the returned `artifacts.report` path. Add `themes:true` to sweep light+dark, `viewports:true` for mobile+desktop, `scope:"#cart"` to audit one subtree.
 
-`counts.consoleErrors` is `console.error` entries **since the last navigation** — not the whole console buffer (use `gb_read {channel:"console"}` for that). The theme sweep **reloads the page per leg** so a site that reads `prefers-color-scheme` once at boot is actually re-themed (pass `themeReload:false` to keep in-page state); if the light and dark screenshots come out byte-identical, that is reported as a finding rather than left to look like a passing dark-mode check.
+`counts.consoleErrors` is `console.error` entries **since the last navigation** — not the whole console buffer (use `gb_read {channel:"console"}` for that; an action delta's `console` is every message emitted during that one action, at every level). The theme sweep **reloads the page per leg** so a site that reads `prefers-color-scheme` once at boot is actually re-themed (pass `themeReload:false` to keep in-page state); if the light and dark screenshots come out byte-identical, that is reported as a finding rather than left to look like a passing dark-mode check.
+
+**Cold vs warm — read the `navigation` field before you believe a clean result.** A second load of the same URL is *warm*, and a warm load quietly loses real first-visit findings: CLS is a first-paint race a warm load wins (measured 0.1734 → 0 on a real page), and a negatively-cached 404 like `/favicon.ico` is never re-requested. Every report says which it measured, and a warm one carries an explicit warning. When first-load behaviour matters, pass `cold:true` (`--cold`) — it clears the HTTP cache and re-navigates before measuring. (Sub-resources are always re-fetched, cache-disabled; the browser's own favicon cache is outside CDP's reach, so for that one use a fresh session.)
+
+Noise you should EXPECT to see collapsed rather than listed: `Ignored 404s: N` when you set `ignore404` (only status-404 rows are demoted — the same path failing 500 still reports, and demoted rows stay in the on-disk report), `Modal open; N behind backdrop`, and `N interactive elements in deferred section …; scroll to audit` for `content-visibility:auto` sections that simply have not painted yet.
 
 Pull one channel at a time with `gb_read {session, channel}`:
 - `errors` — console.error + uncaught exceptions, source-map-remapped to your original files
@@ -76,7 +80,7 @@ Only reach for `gb_observe` when you DON'T know the DOM: it returns a distilled 
 - `gb_wait {session, for:{selector:"#done"}}` — targeted wait; `for` is one of `{selector}|{text}|{url}|{hydration:true}|{timeout:ms}`. It **never throws on timeout** — it returns `matched:false` so you branch.
   - `{url:"/dashboard"}` (leading slash) matches the **pathname**: `/dashboard` and `/dashboard/settings`, never `/dashboardx`. Without the slash it's a substring of the full href (`{url:"dashboard"}`); `*` globs. From the CLI **in Git Bash**, `--url /dashboard` is rewritten by MSYS into a Windows path before Node sees it — Glassbox un-mangles it, but `--url dashboard` is the bulletproof form.
   - `{timeout:ms}` is a plain sleep: it owns its own budget, always succeeds after the duration, and exits 0 (safe in an `&&` chain).
-- `gb_screenshot {session}` — writes a webp to the shots/ dir and returns the PATH. `fullPage`, `selector` (clip to one element), `theme` options. To actually see it, `Read` the path.
+- `gb_screenshot {session}` — writes a webp to the shots/ dir and returns the PATH. `fullPage`, `selector` (clip to one element), `theme` options. To actually see it, `Read` the path. A `fullPage` capture first forces `content-visibility:auto` sections to paint (they otherwise stitch in as blank paper — a screenshot that says "half your page is missing" when it isn't) and returns `forcedPaint:N`.
 - Artifacts pile up per session (shots/reports/net/journal). List them from the CLI: `glassbox artifacts -s <session>`.
 
 ## 6. Watch (bring a human in)
@@ -124,6 +128,7 @@ gb_session {op:"close", name:"login-fix"}
 ## Notes
 
 - Structured errors are self-correcting: a `STALE_REF`, `PAUSED`, `NO_SESSION`, `NO_TARGET`, or `ACT_OCCLUDED` result carries the code, a correction hint, and (for bad names/refs/coverers) the specifics — read it and retry, don't give up.
-- Noise discipline in `verify`: while a modal is open its backdrop makes everything behind it unreachable BY DESIGN, so that whole batch collapses to one info line ("modal open; N interactive elements behind backdrop"); interactive elements hidden by an ancestor's `visibility:hidden` (Tailwind `.invisible` on a closed drawer) are one grouped warning naming that ancestor. Both are facts, not floods.
+- Noise discipline in `verify`: while a modal is open its backdrop makes everything behind it unreachable BY DESIGN, so that whole batch collapses to one info line ("modal open; N interactive elements behind backdrop"); interactive elements hidden by an ancestor's `visibility:hidden` (Tailwind `.invisible` on a closed drawer) are one grouped warning naming that ancestor; `content-visibility:auto` sections are *deferred*, not hidden — one info line, no pathology. Facts, not floods.
+- A low error count is only as good as the conditions it was measured in: warm load, cached fonts, allowlisted 404s. The report tells you all three — read them before you say "clean".
 - A low error count is weak evidence of quality; verify after EVERY change, not once at the end.
 - Cleanup: `glassbox kill-all` reaps the daemon and every Glassbox-launched Chromium, leaving zero orphans.
