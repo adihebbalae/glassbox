@@ -1,5 +1,10 @@
 # Glassbox defect log — DegreeForge dogfood, 2026-07-24
 
+> **STATUS (2026-07-24): all 11 fixed** in `b58502f`, plus both cheap observations. Every fix is
+> pinned by a check that fails on the pre-fix build (`test/m9.mjs`, 30 checks; suite 214/214).
+> Deferred, as the report itself suggests: the React-Flow same-component hit-area exemption and the
+> React-fiber `onClick` source for `listeners`. Per-defect detail: `docs/BUILD-LEDGER.md` Phase 6.
+
 Source: full visual-QA pass of DegreeForge (localhost:5173) driven entirely through the Glassbox CLI
 (`src/cli.mjs`), two parallel sessions (`df-dogfood` light 1280×575, `df-dark` dark), pages: `/`,
 `/planner`, `/map` (Required + All-ECE, 233 nodes/478 edges), `/progress`, `/professors`, plus a
