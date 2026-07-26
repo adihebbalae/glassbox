@@ -67,6 +67,15 @@ lifecycle). White-box features go through `context.newCDPSession(page)` raw CDP.
 - **Concurrency**: session name is an explicit parameter on every call; per-session command
   queues inside the daemon (serialize within a session, full parallelism across sessions) —
   transport sharing alone does not grant concurrency (research 04).
+- **Ownership** (defect round 4): the daemon is machine-wide and SHARED between agents, so every
+  session records the client that opened it (`--client` > `GLASSBOX_CLIENT` > `anonymous`; the MCP
+  shim uses `mcp-<pid>` so MCP agents get it for free) and every request carries that id in a
+  header. A shared daemon is a sound architecture; a shared *destroy* verb without an ownership
+  model is not: `kill-all --mine` is scoped to the caller, a bare `kill-all`/`daemon stop` REFUSES
+  (structured `FOREIGN_SESSIONS`, naming the other clients) while someone else's sessions have been
+  used inside a 5-minute window, and `--force` keeps the machine-wide power for wedge recovery.
+  Anonymous is deliberately not an identity — anonymous callers own anonymous sessions, so the
+  single-agent path is unchanged.
 
 ## 3. Observation model (research 06 + spike 3)
 

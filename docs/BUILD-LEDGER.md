@@ -122,10 +122,43 @@ project lives here, its own repo (`main`).
       **Deferred:** nothing from this round. The blank-clip floor is a heuristic (√area, calibrated on
       five measured captures) and is recorded as such — it warns, never fails.
 
-## Known limitations (v0.1.0 + defect rounds 1-3)
+- [x] Phase 9 — **Defect round 4 (DegreeForge TASK-119, 2026-07-26)**. A verification subagent lost
+      five live sessions mid-checklist: a concurrent Glassbox client on the same machine ran
+      `kill-all`, and `POST /shutdown` tore down every session in the shared daemon with no
+      ownership check (`docs/defects-2026-07-26-degreeforge-task119.md`). Fixed, pinned by
+      `test/m12.mjs` (14/14). Suite is now **262/262** across 12 proofs.
+
+      | # | Defect | Fix | Where |
+      | --- | --- | --- | --- |
+      | D12 | `kill-all` / `daemon stop` destroyed EVERY session in the machine-wide daemon, silently, with no concept of whose they were | sessions record an owner (`--client` > `GLASSBOX_CLIENT` > `anonymous`, carried on every request as a header); `kill-all --mine` destroys only the caller's and leaves the daemon up while others remain; a bare `kill-all`/`daemon stop` REFUSES with a structured `FOREIGN_SESSIONS` naming the other clients when their sessions were used inside 5 minutes; `--force` keeps the machine-wide clean slate | `protocol.mjs`, `daemon/sessions.mjs`, `daemon/daemon.mjs`, `cli.mjs`, `mcp-shim.mjs` |
+      | D12b | round 3's own hygiene fix had WIDENED exactly this blast radius: bare `kill-all` reaped every glassbox daemon machine-wide by command-line match | cross-daemon reaping moved behind `--force` (m11's z3 updated to match) — that capability is wedge recovery, not routine cleanup | `cli.mjs`, `test/m11.mjs` |
+      | obs | "the daemon churned under me" took a journal + source-code dig to diagnose | `NO_SESSION` carries the daemon's identity (`pid`, `startedAt`) and the CLI prints it; `session open` banners the daemon pid and the owner, so the two can be compared | `daemon/sessions.mjs`, `cli.mjs` |
+
+      **The MCP face gets ownership for free**: a shim process is long-lived and one-per-agent, so it
+      sets `GLASSBOX_CLIENT=mcp-<pid>` at startup and `daemonReq` stamps it on every call. CLI agents
+      export the variable once (or pass `--client`). **Anonymous is deliberately not an identity** —
+      anonymous callers own anonymous sessions, which is why the single-agent path and the other
+      eleven proofs needed no changes at all: they open and reap as one anonymous client, exactly as
+      before. The recency window is `GLASSBOX_ACTIVE_WINDOW_MS` (default 5 min) so staleness is
+      testable without waiting five minutes.
+
+      **Deferred:** per-client credentials (a client id is a LABEL, not a secret — any caller can
+      claim any id; the daemon is already loopback-bound behind a bearer token, so ownership guards
+      against the ACCIDENT that was filed, not against a hostile client); and a "your sessions were
+      just destroyed" push to affected clients — the CLI's one-shot processes have nothing to receive
+      it, and the `NO_SESSION` daemon stamp answers the same question at the point of use.
+
+## Known limitations (v0.1.0 + defect rounds 1-4)
 - display:none (and content-visibility:hidden) treated as deliberate — an accidentally-hidden
   element won't be flagged; win32-only proven; parallelism tested at 4 sessions; live-wcii check
   is manual, not CI-gated.
+- Session ownership is advisory, not authenticated: a client id is a label any caller can set, and
+  `--force` still ends everyone's sessions by design. It stops the accident, not an adversary.
+- Two agents that both leave `GLASSBOX_CLIENT` unset are one client ("anonymous") and can reap each
+  other. Identify yourself if you share a machine.
+- `kill-all --mine` does not sweep chromium while the daemon stays up (the shared browser belongs to
+  the remaining sessions), so a stray browser process from a crashed session is only reaped by a
+  bare `kill-all` or `--force`.
 - While ANY modal is open, occlusion warnings outside it are suppressed (counted, not listed) —
   a genuine z-order bug elsewhere on the page hides behind that one info line until the modal closes.
 - The click hit-point probe covers click/dblclick; `hover` still relies on Playwright's own
@@ -144,9 +177,10 @@ project lives here, its own repo (`main`).
   itself visible with text or media). A legitimately featureless element that carries text — e.g.
   transparent text on a matching background — will trip it; that is a real UI smell, but it is a
   warning in the result, never a failure.
-- `kill-all` reaps daemons by command-line match, so it takes down EVERY glassbox daemon on the
-  machine, not just this checkout's. That is the singleton contract (one daemon, one browser pool),
-  but it means two working copies cannot run suites side by side.
+- `kill-all --force` reaps daemons by command-line match, so it takes down EVERY glassbox daemon on
+  the machine, not just this checkout's. That is the singleton contract (one daemon, one browser
+  pool), but it means two working copies cannot run suites side by side. (Round 4 moved this out of
+  bare `kill-all`: routine cleanup no longer reaches another agent's daemon.)
 
 ## Decisions log
 - 2026-07-23: Name = Glassbox. Repo at `C:\Users\boomb\Documents\_Projects\glassbox`.

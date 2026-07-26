@@ -21,7 +21,16 @@ Options: `headed:true` (visible window — for hover/tooltip/GPU-sensitive check
 
 Need a different viewport later? Resize in place instead of opening a second session: `gb_session {op:"resize", name:"checkout-form", viewport:{width:390,height:844}}` (CLI: `glassbox session resize checkout-form 390x844`).
 
-Close it when done: `gb_session {op:"close", name:"checkout-form"}`. To reap everything (daemon + all chromium) after a run: `glassbox kill-all` (CLI).
+**Cleanup — you are sharing this daemon.** ONE Glassbox daemon serves every agent on the machine, so sessions are **owned**: whoever opened one owns it. The MCP shim identifies itself automatically (`mcp-<pid>`); CLI agents `export GLASSBOX_CLIENT=my-task` once, or pass `--client my-task`. Clean up with either of:
+
+```
+gb_session {op:"close", name:"checkout-form"}     ← one session
+glassbox kill-all --mine                          ← every session YOU opened (CLI)
+```
+
+`kill-all --mine` is the standard end-of-task cleanup: it leaves the daemon, and every other agent's live work, untouched — and stops the daemon only when nothing is left in it. A **bare** `glassbox kill-all` targets the whole daemon and is **refused** while another client's sessions are in use (it names them). `--force` overrides that: it is a machine-wide clean slate — every session, every Glassbox Chromium, every Glassbox daemon, *including another agent's in-progress verification*. Reach for it only when something is genuinely wedged, and know what you are ending.
+
+If your sessions vanish and calls start returning `NO_SESSION`, read the `daemon` line in the error: a pid different from the one your `session open` printed means the daemon restarted (or someone forced it down) and took every session with it. Re-open and re-navigate; nothing is recoverable.
 
 ## 2. Verify-first workflow (do this every change)
 
@@ -106,7 +115,7 @@ glassbox dev --cmd "npm run dev" --no-attach           # just print the discover
 
 It prints the ready URL, a watch URL for your human, and the first `verify`. After that, every rebuild the server logs is journaled and re-checks the build-error overlay, printing `BUILD ERROR [vite] …` when your edit doesn't compile. Add `--auto-verify` to re-run the full verify on each rebuild. The session it attaches (`dev` by default) is a normal session — keep using `gb_verify {session:"dev"}` and every other tool against it from MCP while the loop runs.
 
-This one is CLI-only on purpose (the MCP tool surface is capped); run it with Bash, background it if you want to keep working, and stop it with `q` + Enter or `glassbox kill-all`.
+This one is CLI-only on purpose (the MCP tool surface is capped); run it with Bash, background it if you want to keep working, and stop it with `q` + Enter or `glassbox kill-all --mine`.
 
 ## 8. Worked example (compact)
 
@@ -133,4 +142,4 @@ gb_session {op:"close", name:"login-fix"}
 - Noise discipline in `verify`: while a modal is open its backdrop makes everything behind it unreachable BY DESIGN, so that whole batch collapses to one info line ("modal open; N interactive elements behind backdrop"); interactive elements hidden by an ancestor's `visibility:hidden` (Tailwind `.invisible` on a closed drawer) are one grouped warning naming that ancestor; `content-visibility:auto` sections are *deferred*, not hidden — one info line, no pathology. Facts, not floods.
 - A low error count is only as good as the conditions it was measured in: warm load, cached fonts, allowlisted 404s. The report tells you all three — read them before you say "clean".
 - A low error count is weak evidence of quality; verify after EVERY change, not once at the end.
-- Cleanup: `glassbox kill-all` reaps the daemon and every Glassbox-launched Chromium, leaving zero orphans.
+- Cleanup: `glassbox kill-all --mine` ends your sessions and leaves everyone else's alone. Bare `kill-all` (whole daemon) refuses while another client is working; `--force` is the machine-wide last resort — it can end another agent's verification mid-run, which is a real incident, not a tidy-up.

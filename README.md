@@ -70,8 +70,8 @@ glassbox verify -s checkout
 # 4. let a human watch (live screencast + click/key takeover)
 glassbox watch checkout
 
-# 5. done — reap the daemon and every browser it started
-glassbox kill-all
+# 5. done — end YOUR sessions (the daemon is shared; this leaves everyone else's alone)
+glassbox kill-all --mine
 ```
 
 Iterating against a dev server? Run it *through* Glassbox — one command spawns it, finds its ready
@@ -99,7 +99,10 @@ glassbox dev --cmd "npm run dev" --cwd . -s dev
 | `session resize <name> WxH` | Resize a live session (mobile checks without re-opening and re-seeding) |
 | `daemon start\|stop\|status` | Explicit daemon control (rarely needed) |
 | `artifacts -s <session>` | List the on-disk shots / reports / net logs / journal |
-| `kill-all` | Reap the daemon, every Glassbox Chromium, and any orphaned dev server |
+| `kill-all --mine` | End the sessions **you** opened; leave the daemon (and other agents' work) alone. The normal cleanup |
+| `kill-all` | Whole daemon. **Refuses** while another client's sessions are in use, naming them |
+| `kill-all --force` | Machine-wide clean slate: every session, every Glassbox Chromium/daemon, orphaned dev servers — including other agents' live work |
+| `--client <id>` / `GLASSBOX_CLIENT` | Who you are. Sessions are owned by whoever opened them; the MCP shim sets `mcp-<pid>` automatically |
 | `mcp` | Run the stdio MCP server (this is what `.mcp.json` points at) |
 
 **Navigate & act** — target by `<css>` positionally, or `--ref eN` / `--testid` / `--role`+`--name` / `--text`
@@ -223,18 +226,34 @@ The journal is the cold-attach story: a fresh agent with no context can read
 
 ## Troubleshooting
 
+**I'm done — how do I clean up?**
+```bash
+glassbox kill-all --mine   # ends YOUR sessions; other agents keep working
+```
+The daemon is **machine-wide and shared**, so sessions are owned by whoever opened them (identify
+yourself with `--client <id>` or `GLASSBOX_CLIENT`; the MCP shim does it automatically). `--mine`
+stops the daemon only if nothing is left in it. `session ls` shows every session's owner.
+
 **Everything is wedged / I want a clean slate.**
 ```bash
-glassbox kill-all      # daemon + every glassbox chromium + orphaned dev servers, then re-run
+glassbox kill-all          # whole daemon — REFUSES while another client's sessions are live
+glassbox kill-all --force  # machine-wide: every session, chromium, daemon, orphaned dev server
 ```
-It reports what it reaped (`chromium 7 -> 0, dev orphans reaped 1`) and PID-reuse-checks every
-kill, so it can never take down an unrelated process. It also finds daemons the discovery file does
-NOT name (`+1 stray`) — a kill-all that races a starting daemon used to orphan one, and an orphaned
-daemon keeps a browser alive that the next run cannot account for.
+Bare `kill-all` names who else is in there and stops, because taking the daemon down ends *their*
+sessions too — the failure this guard exists for cost a live verification run 15 minutes of work.
+`--force` is the real clean slate and its blast radius is the point: it also reaps daemons the
+discovery file does not name (`+1 stray`), which is how an orphaned daemon keeps a browser alive
+that the next run cannot account for. Everything is PID-reuse-checked, so it can never take down an
+unrelated process — but it CAN take down another agent's.
 
 **`DAEMON_UNREACHABLE` or a stale `daemon.json`.** The daemon is auto-started on demand; a stale
 discovery file (dead pid, reused port) is detected by a ping+probe handshake and overwritten. If it
-persists: `glassbox kill-all`, then `glassbox daemon status`.
+persists: `glassbox kill-all --force`, then `glassbox daemon status`.
+
+**My sessions vanished and everything returns `NO_SESSION`.** Read the `daemon:` line in the error —
+a pid different from the one your `session open` banner printed means the daemon restarted (crash,
+`daemon stop`, or someone's `kill-all --force`) and took every session with it. Nothing is
+recoverable; re-open and re-navigate. `glassbox daemon status` shows the current pid and uptime.
 
 **Everything returns `PAUSED`.** That is not a failure — a breakpoint is holding that session.
 While paused, `debug state|inspect|eval|step|resume|pause|screenshot` work in a parallel lane and
@@ -272,11 +291,12 @@ never hydrated). The result is still complete — it just wasn't quiet.
 ## Tests
 
 ```bash
-npm test              # all 11 proofs, 248 checks against a real browser (~15 min)
+npm test              # all 12 proofs, 262 checks against a real browser (~17 min)
 npm run test:m8       # the system-level pass: parallel stress, seed sweep, artifact contract
 npm run test:m9       # defect round 1 regressions (each check fails on the pre-fix build)
 npm run test:m10      # defect round 2 regressions (deferred content, cold/warm loads, 404 allowlist)
 npm run test:m11      # defect round 3 regressions (collapsed <details>, clipped-capture framing)
+npm run test:m12      # defect round 4 regressions (session ownership, scoped destroy verbs)
 npm run test:live     # OPTIONAL, not in npm test: live check against a real Astro project
 ```
 
