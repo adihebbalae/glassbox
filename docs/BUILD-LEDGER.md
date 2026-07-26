@@ -90,7 +90,39 @@ project lives here, its own repo (`main`).
       and the "theme responded without reload" detection (round-1 D2 sharpening) — the sweep would
       have to measure both ways to know, which doubles every sweep to save one reload.
 
-## Known limitations (v0.1.0 + defect rounds 1-2)
+- [x] Phase 8 — **Defect round 3 (WCII villas-on-rio dogfood, 2026-07-25)**. A pass over a second
+      WCII building page, served from the built `dist/` by `astro preview`, filed 2 defects
+      (`docs/defects-2026-07-25-wcii-dogfood.md`) and re-confirmed all four round-2 fixes live.
+      Both fixed, pinned by `test/m11.mjs` (15/15). Suite is now **248/248** across 11 proofs.
+
+      | # | Defect | Fix | Where |
+      | --- | --- | --- | --- |
+      | W5 | interactive content in a CLOSED `<details>` reported as 10 × "invisible … (content-visibility)" — wrong count register AND a cause the computed styles contradict (the UA `::details-content` pseudo is not in the parentElement chain) | fourth bucket — **collapsed**: `closest('details:not([open])')` (and `[hidden="until-found"]`, same family) collapses the descendants into ONE info line per widget, naming it and its summary text, never counted as pathology | `daemon/layout-audit.mjs`, `daemon/verify.mjs` |
+      | W5b | the same code asserted `content-visibility` for ANY unexplained hide | when nothing in the DOM ancestor chain explains it, the finding now says the cause is *outside* the chain (a UA pseudo-element or shadow root) instead of naming a mechanism every ancestor's computed style contradicts | `daemon/layout-audit.mjs` |
+      | W6 | `screenshot --selector` returned a silently BLANK clip "for the rest of the session once any `<details>` had been opened" | the clip is now converted to PAGE coordinates and captured with `captureBeyondViewport`+`fromSurface`; the selector path also force-paints (`content-visibility:auto` content clipped blank exactly like the full-page case); and a featureless clip of a visible element with content returns an explicit `warning` instead of a silent blank | `daemon/extras.mjs`, `cli.mjs` |
+      | hyg | `kill-all` could not reap a daemon whose discovery file was gone, and reported "chromium N -> 0" while the processes were still terminating | daemons are found by command line (PID-verified) like chromium always was; the chromium count polls until the kill really lands; a failed WMI query retries instead of returning the reassuring zero | `daemon/prockit.mjs`, `cli.mjs` |
+
+      **W6's filed root cause was wrong, and the measurement says so.** The log blamed a compositor
+      state left live by the `::details-content` transition, with `DOM.getBoxModel` returning
+      document-absolute coordinates as an "adjacent latent issue". Measured (raw CDP, this repo's
+      Chromium): `DOM.getBoxModel` returns **viewport-relative** coordinates — y = -1500 at
+      scrollY 1500, exactly like `getBoundingClientRect` — while `Page.captureScreenshot` wants the
+      clip in **page** coordinates. The two agree only at scroll 0. The `<details>` was innocent:
+      clicking its summary SCROLLS it into view, and every clip taken afterwards was framed against
+      the wrong origin — which is why the blank persisted for the session (the page stays scrolled),
+      why a re-navigation "fixed" it (scroll resets), and why clip-less viewport shots were immune.
+      Reproduced with no `<details>` at all: `scrollTo(0,1500)` alone is enough. Parameter matrix:
+      page coords + `captureBeyondViewport` is correct in every case (6380 B / 24626 B); viewport
+      coords are wrong whenever scrollY ≠ 0 (462 B / 970 B).
+
+      New bug-zoo pages: `details.html` (a closed `<details>` with 10 interactive descendants, a
+      `hidden="until-found"` region, a second `<details>` inside a `content-visibility:auto` section,
+      and a visible-but-featureless box for the blank-clip guardrail) and `pseudo-hide.html` (an OPEN
+      `<details>` frozen shut by author CSS on the UA pseudo — the residual case behind the honesty fix).
+      **Deferred:** nothing from this round. The blank-clip floor is a heuristic (√area, calibrated on
+      five measured captures) and is recorded as such — it warns, never fails.
+
+## Known limitations (v0.1.0 + defect rounds 1-3)
 - display:none (and content-visibility:hidden) treated as deliberate — an accidentally-hidden
   element won't be flagged; win32-only proven; parallelism tested at 4 sessions; live-wcii check
   is manual, not CI-gated.
@@ -103,9 +135,18 @@ project lives here, its own repo (`main`).
   first-visit `/favicon.ico` 404 only ever appears once per browser. A fresh session is the only
   true cold start for that one.
 - Contrast/occlusion INSIDE a `content-visibility:auto` section are not audited until it is scrolled
-  into view (the info line says so).
+  into view, and inside a collapsed `<details>` / `hidden="until-found"` region until it is opened
+  (both info lines say so). Opening every disclosure automatically would change page state the
+  caller did not ask to change.
 - `verify --themes` reloads per leg, so in-page state (filled forms, opened panels) is lost unless
   `themeReload:false` is passed.
+- The blank-clip warning is a HEURISTIC (bytes below a √area floor, on an element that reports
+  itself visible with text or media). A legitimately featureless element that carries text — e.g.
+  transparent text on a matching background — will trip it; that is a real UI smell, but it is a
+  warning in the result, never a failure.
+- `kill-all` reaps daemons by command-line match, so it takes down EVERY glassbox daemon on the
+  machine, not just this checkout's. That is the singleton contract (one daemon, one browser pool),
+  but it means two working copies cannot run suites side by side.
 
 ## Decisions log
 - 2026-07-23: Name = Glassbox. Repo at `C:\Users\boomb\Documents\_Projects\glassbox`.

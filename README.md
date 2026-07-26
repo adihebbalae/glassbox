@@ -122,7 +122,7 @@ glassbox dev --cmd "npm run dev" --cwd . -s dev
 | `verify [--scope CSS] [--themes] [--viewports] [--cold] [--ignore-404 /path] [--no-axe] [--no-shots] [--no-theme-reload]` | The one-call bundle. `--themes` reloads per leg (boot-time theme readers) and drives `--theme-attr`/`--theme-class`; identical light/dark shots are themselves a finding. Every report labels the load state it measured (**cold vs warm**); `--cold` clears the cache and re-navigates first |
 | `read console\|network\|errors\|overlay [--since N]` | One channel at a time, cursored, source-map-remapped |
 | `observe [--selector CSS] [--limit N]` | Distilled DOM+AX tree with numbered refs (~1.4k tokens, not 95k) |
-| `screenshot [--full] [--selector CSS] [--theme light\|dark] [--no-force-paint]` | Writes a webp, prints the **path**. `--full` forces `content-visibility:auto` sections to paint first, else they stitch in blank |
+| `screenshot [--full] [--selector CSS] [--theme light\|dark] [--no-force-paint]` | Writes a webp, prints the **path**. `--full` **and** `--selector` force `content-visibility:auto` sections to paint first (else they come back blank); `--selector` is framed in page coordinates, so it is correct at any scroll position, and warns when a clip is featureless anyway |
 | `settle` | Block until the page quiesces |
 
 **Debug (white-box)**
@@ -228,7 +228,9 @@ The journal is the cold-attach story: a fresh agent with no context can read
 glassbox kill-all      # daemon + every glassbox chromium + orphaned dev servers, then re-run
 ```
 It reports what it reaped (`chromium 7 -> 0, dev orphans reaped 1`) and PID-reuse-checks every
-kill, so it can never take down an unrelated process.
+kill, so it can never take down an unrelated process. It also finds daemons the discovery file does
+NOT name (`+1 stray`) — a kill-all that races a starting daemon used to orphan one, and an orphaned
+daemon keeps a browser alive that the next run cannot account for.
 
 **`DAEMON_UNREACHABLE` or a stale `daemon.json`.** The daemon is auto-started on demand; a stale
 discovery file (dead pid, reused port) is detected by a ping+probe handshake and overwritten. If it
@@ -270,19 +272,21 @@ never hydrated). The result is still complete — it just wasn't quiet.
 ## Tests
 
 ```bash
-npm test              # all 10 proofs, 233 checks against a real browser (~15 min)
+npm test              # all 11 proofs, 248 checks against a real browser (~15 min)
 npm run test:m8       # the system-level pass: parallel stress, seed sweep, artifact contract
 npm run test:m9       # defect round 1 regressions (each check fails on the pre-fix build)
 npm run test:m10      # defect round 2 regressions (deferred content, cold/warm loads, 404 allowlist)
+npm run test:m11      # defect round 3 regressions (collapsed <details>, clipped-capture framing)
 npm run test:live     # OPTIONAL, not in npm test: live check against a real Astro project
 ```
 
 Each proof drives the real CLI/daemon against a real Chromium, and every one ends by asserting
 `kill-all` leaves zero orphan processes. `test/bugzoo/` is the seeded-bug site the proofs verify
 against — 17 deliberate bug classes plus a clean page as the false-positive check, plus the pages
-seeded from the two field-defect rounds (occluded-but-clickable control, boot-time theme, Tailwind
+seeded from the three field-defect rounds (occluded-but-clickable control, boot-time theme, Tailwind
 class theme, modal backdrop, invisible drawer, delegated listeners, deferred `content-visibility`
-sections, and a request-counting cache page).
+sections, a request-counting cache page, a collapsed `<details>` accordion, and a UA-pseudo hide
+no computed style can explain).
 
 ## Known limits (v1)
 

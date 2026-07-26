@@ -109,8 +109,12 @@ result rather than a hang. Per-tab setup: `Network.setBypassServiceWorker(true)`
   buffered `layout-shift` PerformanceObserver with source nodes. Unpaintedness is GRADED, never
   lumped: `display:none` / `content-visibility:hidden` = deliberate (silent); an ancestor's
   `visibility:hidden` = one grouped warning naming that ancestor; `content-visibility:auto` =
-  **deferred**, an info line only (it paints on scroll — a performance primitive, not a hide);
-  a modal backdrop = one info line for everything behind it.
+  **deferred**, an info line only (it paints on scroll — a performance primitive, not a hide); a
+  closed `<details>` / `hidden="until-found"` = **collapsed**, one info line naming the widget (it
+  paints on toggle); a modal backdrop = one info line for everything behind it. And when NOTHING in
+  the DOM ancestor chain explains a hide — a UA pseudo-element like `::details-content`, a shadow
+  root — the finding says exactly that instead of naming a mechanism the computed styles
+  contradict. An audit that invents a cause sends the fixer to the wrong file.
 - **Load state**: every report says whether it measured a COLD or a WARM load, because a warm one
   cannot see first-load CLS or a negatively-cached 404, and reports the warm caveat as a finding.
   `cold:true` clears the HTTP cache and re-navigates. Per-tab `Network.setCacheDisabled(true)` is
@@ -122,7 +126,11 @@ result rather than a hang. Per-tab setup: `Network.setBypassServiceWorker(true)`
 - **Screenshots must paint what they stitch**: a full-page capture first forces
   `content-visibility:auto` subtrees to render (via an INSPECTOR stylesheet — not a DOM node, so
   the MutationObserver never fires and observe refs survive), since `captureBeyondViewport` alone
-  stitches blank paper over them.
+  stitches blank paper over them. An element (clipped) capture does the same, and converts the clip
+  into PAGE coordinates: `DOM.getBoxModel` answers in VIEWPORT coordinates, so an un-converted clip
+  is only correct at scroll 0 — after which every element screenshot silently framed the wrong
+  region. A clip that still comes back featureless on a visibly-populated element returns a
+  `warning`; a blank primary artifact is never handed back silently.
 - **a11y**: vendored axe-core, scoped by default, structural dedup (card grids), contrast rule
   cost-aware.
 - **Sweeps**: viewport set (mobile/tablet/desktop) × theme — driving *all three* of
