@@ -6,7 +6,8 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import {
-  PATHS, daemonReq, pingDaemon, readDaemonFile, ensureDaemon as ensureDaemonShared,
+  PATHS, HTTP_STATUS, daemonReq, pingDaemon, readDaemonFile, clientId,
+  ensureDaemon as ensureDaemonShared,
 } from './protocol.mjs';
 import {
   verifyGlassboxPid, processAlive, taskkillTree, listGlassboxChromium, listGlassboxDaemons, sweepOrphans,
@@ -30,6 +31,16 @@ function fail(error) {
   else {
     console.error(`error [${e.code}]: ${e.message}`);
     if (e.valid_values) console.error(`  valid: ${e.valid_values.join(', ') || '(none)'}`);
+    // Who else is in this daemon — printed when a destroy verb refuses (D12).
+    for (const g of e.foreign || []) {
+      console.error(`  client '${g.client}': ${g.count} session(s) [${g.sessions.join(', ')}], last used ${Math.round(g.idleMs / 1000)}s ago`);
+    }
+    // …and WHICH daemon answered. A pid that differs from the one your session banner printed means
+    // the daemon restarted and took every session with it — one line instead of a journal dig.
+    if (e.daemon) {
+      const up = new Date(e.daemon.startedAt).toTimeString().slice(0, 8);
+      console.error(`  daemon: pid ${e.daemon.pid}, up since ${up} — a different pid than your session banner means it restarted`);
+    }
     if (e.correction_hint) console.error(`  hint: ${e.correction_hint}`);
   }
   process.exitCode = 1;
@@ -53,14 +64,19 @@ async function daemonStart() {
   out({ running: true, pid: d.pid, port: d.port }, `daemon running (pid ${d.pid}, port ${d.port})`);
 }
 
-async function daemonStop() {
+async function daemonStop(opts = {}) {
   const d = readDaemonFile();
   if (!d || !(await pingDaemon(d))) return out({ running: false }, 'daemon not running');
+  // Stopping the daemon destroys EVERY session in it, including other agents'. Same guard as
+  // kill-all: refuse while someone else is using it, unless --force.
+  let r;
   try {
-    await daemonReq(d, 'POST', '/shutdown', {}, 5000);
+    r = await daemonReq(d, 'POST', '/shutdown', { force: !!opts.force }, 8000);
   } catch {
-    /* it may drop the socket as it exits */
+    r = { status: 200, body: {} }; // it may drop the socket as it exits
   }
+  if (r.status === HTTP_STATUS.FOREIGN_SESSIONS) return fail(r.body.error);
+  if (r.status !== 200 && r.body?.error) return fail(r.body.error);
   out({ stopped: true, pid: d.pid }, `daemon stopped (pid ${d.pid})`);
 }
 
@@ -89,7 +105,11 @@ async function sessionOpen(name, opts) {
   // already returned it, the CLI silently didn't.
   const watchUrl = watchUrlFor(d, name);
   const vp = body.viewport ? ` ${body.viewport.width}x${body.viewport.height}` : '';
-  out({ ...body, watchUrl }, `session '${name}' open (${body.headed ? 'headed' : 'headless'}${vp})\n  watch: ${watchUrl}`);
+  // The banner names the OWNER and the DAEMON: the owner is what `kill-all --mine` scopes on, and
+  // the daemon pid is the thing to compare against later if sessions start vanishing (D12 + obs).
+  const who = body.client ? `, client ${body.client}` : '';
+  const dae = body.daemon ? `daemon pid ${body.daemon.pid}` : `daemon pid ${d.pid}`;
+  out({ ...body, watchUrl }, `session '${name}' open (${body.headed ? 'headed' : 'headless'}${vp}${who})\n  ${dae}\n  watch: ${watchUrl}`);
 }
 
 // D11 — resize an existing session instead of opening a second one and re-seeding its state.
@@ -108,10 +128,14 @@ async function sessionLs() {
   const d = await ensureDaemon();
   const { body } = await daemonReq(d, 'GET', '/sessions');
   const rows = body.sessions || [];
-  if (JSON_MODE) return out({ sessions: rows });
+  if (JSON_MODE) return out({ sessions: rows, you: clientId() });
   if (!rows.length) return console.log('no sessions');
+  const me = clientId();
   for (const s of rows) {
-    console.log(`${s.name}\t${s.headed ? 'headed' : 'headless'}\t${s.url || '-'}\tidle ${Math.round(s.idleMs / 1000)}s`);
+    // The owner column is the whole point of ownership being visible: you can see at a glance
+    // which of these a `kill-all --mine` would take, and which belong to someone else.
+    const own = s.client === me ? `${s.client} (you)` : s.client;
+    console.log(`${s.name}\t${own}\t${s.headed ? 'headed' : 'headless'}\t${s.url || '-'}\tidle ${Math.round(s.idleMs / 1000)}s`);
   }
 }
 
@@ -123,28 +147,52 @@ async function sessionRm(name) {
   out(body, `session '${name}' removed`);
 }
 
-async function killAll() {
+/**
+ * The reaper — now with a blast radius the caller chooses (defect D12).
+ *   --mine   destroy only the sessions this client opened; leave the daemon (and everyone else's
+ *            work) alone unless nothing is left. THE end-of-task cleanup verb.
+ *   (bare)   full shutdown, but REFUSED if another client's sessions were used in the last 5 min.
+ *   --force  full shutdown plus the machine-wide sweep (strays, cross-daemon). Wedge recovery.
+ */
+async function killAll(opts = {}) {
+  const mine = !!opts.mine;
+  const force = !!opts.force;
   const d = readDaemonFile();
   const daemonPid = d?.pid;
   if (d) {
+    let r;
     try {
-      await daemonReq(d, 'POST', '/shutdown', {}, 5000);
+      r = await daemonReq(d, 'POST', '/shutdown', { mine, force }, 20000);
     } catch {
-      /* best effort */
+      r = null; // unreachable/dropped socket — fall through to the process-level reaper
+    }
+    if (r && r.status === HTTP_STATUS.FOREIGN_SESSIONS) return fail(r.body.error);
+    if (r && r.status !== 200 && r.body?.error) return fail(r.body.error);
+    // --mine with other clients still present: their daemon and browser stay up, so the sweep
+    // below (which kills chromium machine-wide) must NOT run.
+    if (mine && r?.body && r.body.daemonStopping === false) {
+      return out(
+        { ok: true, mode: 'mine', client: r.body.client, destroyed: r.body.destroyed, remaining: r.body.remaining, daemonStopped: false },
+        `destroyed ${r.body.destroyed.length} session(s) owned by '${r.body.client}'${r.body.destroyed.length ? ` [${r.body.destroyed.join(', ')}]` : ''}; ` +
+        `${r.body.remaining} session(s) belonging to other clients remain — daemon left running`
+      );
     }
     const dl = Date.now() + 5000;
     while (Date.now() < dl && (await pingDaemon(d))) await delay(150);
   }
   // Force-kill the daemon only after confirming the PID is really ours (PID-reuse guard).
   if (daemonPid && processAlive(daemonPid) && verifyGlassboxPid(daemonPid)) taskkillTree(daemonPid);
-  // …and then any daemon the discovery file did NOT name. A kill-all that races a starting daemon
-  // deletes the file while that daemon lives on, still holding a browser: every later kill-all then
-  // reports "daemon (none)" and every later run finds chromium it cannot account for. The reaper
-  // has to be able to find a daemon the same way it finds chromium — by command line, PID-verified.
+  // …and, under --force ONLY, any daemon the discovery file did NOT name. A kill-all that races a
+  // starting daemon deletes the file while that daemon lives on, still holding a browser, and every
+  // later run then finds chromium it cannot account for — so the reaper must be able to find a
+  // daemon the way it finds chromium, by command line, PID-verified. But that also reaches another
+  // agent's daemon, so it lives behind --force with the rest of the machine-wide power (D12).
   const daemonStrays = [];
-  for (const pid of listGlassboxDaemons()) {
-    if (pid === process.pid || pid === daemonPid) continue;
-    if (verifyGlassboxPid(pid) && taskkillTree(pid)) daemonStrays.push(pid);
+  if (force) {
+    for (const pid of listGlassboxDaemons()) {
+      if (pid === process.pid || pid === daemonPid) continue;
+      if (verifyGlassboxPid(pid) && taskkillTree(pid)) daemonStrays.push(pid);
+    }
   }
   const devOrphans = sweepDevOrphans(); // dev servers whose `glassbox dev` died without cleanup
   const before = listGlassboxChromium().length;
@@ -166,8 +214,8 @@ async function killAll() {
     /* already gone */
   }
   out(
-    { ok: true, daemonPid: daemonPid ?? null, daemonStrays, chromiumBefore: before, chromiumAfter: after, devOrphans },
-    `kill-all done — daemon ${daemonPid ?? '(none)'}${daemonStrays.length ? ` (+${daemonStrays.length} stray)` : ''}, chromium ${before} -> ${after}, dev orphans reaped ${devOrphans}`
+    { ok: true, mode: mine ? 'mine' : force ? 'force' : 'all', daemonPid: daemonPid ?? null, daemonStrays, chromiumBefore: before, chromiumAfter: after, devOrphans },
+    `kill-all done${force ? ' (--force, machine-wide)' : ''} — daemon ${daemonPid ?? '(none)'}${daemonStrays.length ? ` (+${daemonStrays.length} stray)` : ''}, chromium ${before} -> ${after}, dev orphans reaped ${devOrphans}`
   );
 }
 
@@ -511,6 +559,7 @@ async function runMcp() {
 // Flags that consume the next token as their value (kebab on the wire → camel in opts).
 const VALUE_FLAGS = {
   '-s': 'session', '--session': 'session', '--color': 'colorScheme', '--base-url': 'baseUrl',
+  '--client': 'client',
   '--selector': 'selector', '--ref': 'ref', '--testid': 'testid', '--role': 'role', '--name': 'name',
   '--text': 'text', '--url': 'url', '--to': 'to', '--by': 'by', '--key': 'key', '--from': 'from',
   '--files': 'files', '--values': 'values', '--limit': 'limit', '--cursor': 'cursor',
@@ -542,6 +591,7 @@ function parseArgs(argv) {
     else if (a === '--no-theme-reload') opts.noThemeReload = true;
     else if (a === '--force') opts.force = true;
     else if (a === '--cold') opts.cold = true;
+    else if (a === '--mine') opts.mine = true;
     else if (a === '--no-force-paint') opts.noForcePaint = true;
     else if (a === '--ignore-404') (opts.ignore404 ||= []).push(argv[++i]); // repeatable
     else if (a === '--full') opts.fullPage = true;
@@ -569,8 +619,14 @@ SESSIONS
   session ls                  session rm <name>
   session resize <name> WxH   (alias: set-viewport — no need to re-open + re-seed for mobile)
   artifacts -s <session>      (list on-disk shots/reports/net/journal)
-  kill-all                    (reap the daemon + every glassbox chromium)
+  kill-all --mine             (YOUR sessions only — the normal end-of-task cleanup)
+  kill-all                    (whole daemon; REFUSES while another client is using it)
+  kill-all --force            (machine-wide clean slate: every session, every glassbox chromium,
+                               every glassbox daemon — including other agents' live work)
   mcp                         (run the stdio MCP server — put this in .mcp.json)
+
+  ONE daemon serves every agent on this machine, so sessions are OWNED. Identify yourself with
+  --client <id> or GLASSBOX_CLIENT (the MCP shim does it automatically); 'session ls' shows owners.
 
 NAVIGATE + ACT   (all take -s <session> or GLASSBOX_SESSION)
   goto <url>
@@ -613,16 +669,19 @@ async function main() {
   try {
     const { pos, opts } = parseArgs(process.argv.slice(2));
     const [verb, sub, arg] = pos;
+    // `--client` outranks GLASSBOX_CLIENT for this invocation. Written into the env before any
+    // request so the single place that stamps the header (protocol.daemonReq) needs no argument.
+    if (opts.client) process.env.GLASSBOX_CLIENT = String(opts.client);
     // Asking for help is a success; an unknown verb (the fallthrough at the bottom) is not.
     if (!verb || verb === 'help' || verb === '--help' || verb === '-h') return console.log(HELP);
     if (verb === 'daemon' && sub === 'start') return await daemonStart();
-    if (verb === 'daemon' && sub === 'stop') return await daemonStop();
+    if (verb === 'daemon' && sub === 'stop') return await daemonStop(opts);
     if (verb === 'daemon' && sub === 'status') return await daemonStatus();
     if (verb === 'session' && sub === 'open') return await sessionOpen(arg, opts);
     if (verb === 'session' && (sub === 'ls' || sub === 'list')) return await sessionLs();
     if (verb === 'session' && (sub === 'rm' || sub === 'close')) return await sessionRm(arg);
     if (verb === 'session' && (sub === 'resize' || sub === 'set-viewport')) return await sessionResize(arg, pos[3], opts);
-    if (verb === 'kill-all') return await killAll();
+    if (verb === 'kill-all') return await killAll(opts);
     if (verb === 'watch') return await watch(sub);
     if (verb === 'dev') return await runDevVerb(opts);
     if (verb === 'mcp') return await runMcp();

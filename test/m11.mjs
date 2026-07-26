@@ -190,9 +190,11 @@ async function run() {
   while (Date.now() < dl && !fs.existsSync(PATHS.daemonFile)) await delay(200);
   const strayLive = fs.existsSync(PATHS.daemonFile) && processAlive(stray.pid);
   try { fs.unlinkSync(PATHS.daemonFile); } catch { /* already gone */ }   // orphan it
-  cli(['--json', 'kill-all']);
+  // --force: cross-daemon reaping reaches another agent's daemon too, so round 4 moved it behind
+  // the flag that means "I really do mean everyone's" (D12). Bare kill-all no longer goes there.
+  cli(['--json', 'kill-all', '--force']);
   await delay(1200);
-  check('z3 kill-all reaps a daemon whose discovery file is gone (found by command line, PID-verified)',
+  check('z3 kill-all --force reaps a daemon whose discovery file is gone (command line, PID-verified)',
     strayLive && !processAlive(stray.pid),
     `stray pid=${stray.pid} started=${strayLive} aliveAfter=${processAlive(stray.pid)}`);
 }

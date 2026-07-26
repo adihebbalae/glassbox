@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
-import { PATHS, CODES, gbErr } from '../protocol.mjs';
+import { PATHS, CODES, ANON_CLIENT, gbErr } from '../protocol.mjs';
 import { createJournal } from './journal.mjs';
 import { createConsoleBuffer, createNetworkTracker } from './buffers.mjs';
 
@@ -56,7 +56,12 @@ async function readCdpEndpoint(udd) {
   return null;
 }
 
-export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
+// How long a session counts as "in use by someone else" after its last command. Long enough that a
+// colleague's paused investigation is protected, short enough that yesterday's leftovers never
+// block a clean slate. Overridable so the behaviour is testable without waiting five minutes.
+export const ACTIVE_WINDOW_MS = Number(process.env.GLASSBOX_ACTIVE_WINDOW_MS) || 5 * 60 * 1000;
+
+export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = Date.now() } = {}) {
   /** name -> session record */
   const sessions = new Map();
   // Persistent contexts keyed by mode; each .browser() is the shared handle we spawn sessions on.
@@ -98,13 +103,17 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
     };
   }
 
+  /** Who this daemon is — stamped onto NO_SESSION so "the daemon churned under me" is one call. */
+  const identity = () => ({ pid: process.pid, startedAt: startTime });
+
   function get(name) {
     const s = sessions.get(name);
     if (!s || !s.context) {
       throw gbErr(CODES.NO_SESSION, `no session named '${name}'`, {
         field: 'name',
-        correction_hint: 'open it first or use one of the listed sessions',
+        correction_hint: 'open it first, or use one of the listed sessions — and read the daemon line: a different pid than the one your session opened against means the daemon restarted and took every session with it',
         valid_values: [...sessions.keys()],
+        daemon: identity(),
       });
     }
     return s;
@@ -144,6 +153,9 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       name,
       createdAt: Date.now(),
       lastTouch: Date.now(),
+      // WHOSE session this is. One machine-wide daemon serves every agent, so without this a
+      // destroy verb cannot tell "clean up after me" from "take down everyone else too" (D12).
+      client: String(opts.client || ANON_CLIENT).slice(0, 64),
       headed: !!opts.headed,
       seq: 0,
       busy: false,
@@ -222,6 +234,7 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       rec.page.on('dialog', (d) => onDialog(rec, d));
       rec.journal = createJournal(PATHS.sessions, name);
       rec.journal.log('create', {
+        client: rec.client,
         headed: rec.headed,
         viewport: opts.viewport ?? null,
         colorScheme: opts.colorScheme ?? null,
@@ -240,10 +253,12 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
     return {
       name: s.name,
       createdAt: s.createdAt,
+      client: s.client,
       url: s.page.url(),
       headed: s.headed,
       viewport: s.page.viewportSize(),
       idleMs: Date.now() - s.lastTouch,
+      daemon: identity(),
       cdp: cdpBlock(s), // browser/target ws + DevTools link (null if no debug port)
     };
   }
@@ -260,10 +275,41 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
       .map((s) => ({
         name: s.name,
         createdAt: s.createdAt,
+        client: s.client,
         url: s.page.url(),
         headed: s.headed,
         idleMs: now - s.lastTouch,
       }));
+  }
+
+  /**
+   * Sessions owned by someone OTHER than `client` that are still in use (created or commanded
+   * within the window). This is what stands between a routine "clean slate" and fifteen minutes
+   * of another agent's work (D12).
+   */
+  function foreignActive(client, windowMs = ACTIVE_WINDOW_MS) {
+    const now = Date.now();
+    const out = new Map();
+    for (const s of sessions.values()) {
+      if (!s.context || s.client === client) continue;
+      const lastUse = Math.max(s.createdAt || 0, s.lastTouch || 0);
+      if (now - lastUse > windowMs) continue; // stale leftovers never block a clean slate
+      const g = out.get(s.client) || { client: s.client, count: 0, sessions: [], idleMs: Infinity };
+      g.count += 1;
+      if (g.sessions.length < 8) g.sessions.push(s.name);
+      g.idleMs = Math.min(g.idleMs, now - lastUse);
+      out.set(s.client, g);
+    }
+    return [...out.values()];
+  }
+
+  /** Destroy exactly the sessions owned by `client`. Returns the names destroyed. */
+  async function destroyMine(client) {
+    const mine = [...sessions.values()].filter((s) => s.context && s.client === client).map((s) => s.name);
+    for (const name of mine) {
+      try { await destroy(name); } catch { /* raced with a GC or another destroy */ }
+    }
+    return mine;
   }
 
   /**
@@ -341,6 +387,9 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000 } = {}) {
     info,
     cdpInfo,
     destroy,
+    destroyMine,
+    foreignActive,
+    identity,
     probe,
     gcTick,
     browserProbe,

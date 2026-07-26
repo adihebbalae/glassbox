@@ -311,7 +311,10 @@ function formatOk(tool, a, body, daemon) {
   }
   if (tool === 'gb_session' && a.op === 'open') {
     const watchUrl = `http://127.0.0.1:${daemon.port}/watch/${enc(body.name)}?token=${daemon.token}`;
-    return compact({ ...body, watchUrl, hint: 'pass this `name` as `session` to every other gb_* tool; give watchUrl to a human to watch.' });
+    return compact({
+      ...body, watchUrl,
+      hint: 'pass this `name` as `session` to every other gb_* tool; give watchUrl to a human to watch. This session is OWNED by the `client` shown — other agents sharing this machine cannot reap it without --force, and you clean up with `glassbox kill-all --mine` (or gb_session close).',
+    });
   }
   if (tool === 'gb_watch') {
     const watchUrl = `http://127.0.0.1:${daemon.port}/watch/${enc(a.session)}?token=${daemon.token}`;
@@ -402,6 +405,13 @@ function write(msg) {
 }
 
 export function runShim() {
+  // IDENTITY (defect round 4): one daemon serves every agent on the machine, so every session
+  // records who opened it and the destroy verbs scope on that. A shim process is long-lived and
+  // one-per-agent, which makes its pid the natural stable id — set it once, and protocol.daemonReq
+  // stamps it on every request, so MCP users get ownership for free. An explicitly-set
+  // GLASSBOX_CLIENT still wins: an operator naming their agent outranks a guess.
+  if (!process.env.GLASSBOX_CLIENT) process.env.GLASSBOX_CLIENT = `mcp-${process.pid}`;
+  logErr(`glassbox mcp client id: ${process.env.GLASSBOX_CLIENT}`);
   // Warm the daemon in the background so the first tool call is fast, without blocking initialize.
   getDaemon().catch((e) => logErr('daemon warmup deferred:', e?.message));
 

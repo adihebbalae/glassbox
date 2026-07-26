@@ -2,10 +2,14 @@
   "//": "Add this to your project's .mcp.json (or ~/.claude.json under mcpServers). Replace the",
   "//path": "absolute path with wherever glassbox is checked out. `glassbox mcp` runs the stdio MCP",
   "//shim": "server, which auto-starts the shared daemon on first use — no separate 'start' step.",
+  "//client": "The shim identifies itself as mcp-<pid> so its sessions are owned by it and another",
+  "//client2": "agent's `kill-all` cannot reap them. Set GLASSBOX_CLIENT below to pin a stable name",
+  "//client3": "instead (useful when you want `kill-all --mine` to mean the same thing across restarts).",
   "mcpServers": {
     "glassbox": {
       "command": "node",
-      "args": ["C:/Users/you/path/to/glassbox/src/cli.mjs", "mcp"]
+      "args": ["C:/Users/you/path/to/glassbox/src/cli.mjs", "mcp"],
+      "env": { "GLASSBOX_CLIENT": "claude-main" }
     }
   }
 }

@@ -7,7 +7,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {
-  PATHS, VERSION, HOST, CODES, HTTP_STATUS, pingDaemon, probeDaemon,
+  PATHS, VERSION, HOST, CODES, HTTP_STATUS, CLIENT_HEADER, ANON_CLIENT, pingDaemon, probeDaemon,
 } from '../protocol.mjs';
 import { createSessionManager } from './sessions.mjs';
 import { handleAction } from './actions.mjs';
@@ -54,6 +54,12 @@ function authed(req, url) {
   return tokenOk(url?.searchParams.get('token'));
 }
 
+/** The caller's identity, from the header every daemonReq sets (default: anonymous). */
+function clientOf(req) {
+  const raw = req.headers[CLIENT_HEADER];
+  return String((Array.isArray(raw) ? raw[0] : raw) || ANON_CLIENT).slice(0, 64) || ANON_CLIENT;
+}
+
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let buf = '';
@@ -98,14 +104,39 @@ async function handle(req, res, mgr) {
     if (method === 'GET' && p === '/probe') {
       return send(res, 200, { ok: true, ...(await mgr.browserProbe()) });
     }
+    // The destructive verb. One daemon serves every agent on the machine, so it has to answer
+    // "whose sessions am I about to destroy?" BEFORE destroying them (D12):
+    //   {mine:true}  → only the caller's; the daemon stays up while anyone else still has one
+    //   {}           → full shutdown, REFUSED with FOREIGN_SESSIONS if another client is still in it
+    //   {force:true} → full shutdown regardless (wedge recovery — the blast radius is the point)
     if (method === 'POST' && p === '/shutdown') {
-      send(res, 200, { ok: true });
+      const body = await readJson(req);
+      const client = clientOf(req);
+      if (body.mine) {
+        const destroyed = await mgr.destroyMine(client);
+        const remaining = mgr.count();
+        const stopping = remaining === 0;
+        send(res, 200, { ok: true, mode: 'mine', client, destroyed, remaining, daemonStopping: stopping });
+        if (stopping) setTimeout(() => shutdownFn(0), 20);
+        return;
+      }
+      const foreign = body.force ? [] : mgr.foreignActive(client);
+      if (foreign.length) {
+        const total = foreign.reduce((n, g) => n + g.count, 0);
+        return sendErr(res, CODES.FOREIGN_SESSIONS,
+          `refusing to shut down: ${total} session(s) owned by ${foreign.length} other client(s) were in use within the last 5 minutes`, {
+            field: 'force',
+            foreign,
+            correction_hint: 'use `kill-all --mine` to destroy only your own sessions (the normal end-of-task cleanup), `session rm <name>` for a single one, or `--force` if you really do mean to take down everyone else\'s work',
+          });
+      }
+      send(res, 200, { ok: true, mode: body.force ? 'force' : 'all', client });
       setTimeout(() => shutdownFn(0), 20); // let the response flush first
       return;
     }
     if (method === 'POST' && p === '/sessions') {
       const body = await readJson(req);
-      return send(res, 200, await mgr.create(body.name, body));
+      return send(res, 200, await mgr.create(body.name, { ...body, client: body.client || clientOf(req) }));
     }
     if (method === 'GET' && p === '/sessions') {
       return send(res, 200, { sessions: mgr.list() });
@@ -177,7 +208,7 @@ async function main() {
   fs.mkdirSync(PATHS.root, { recursive: true });
   fs.mkdirSync(PATHS.sessions, { recursive: true });
 
-  const mgr = createSessionManager({ idleTtlMs: IDLE_TTL });
+  const mgr = createSessionManager({ idleTtlMs: IDLE_TTL, startTime: START });
   const server = http.createServer((req, res) => handle(req, res, mgr));
   server.on('clientError', (_e, sock) => sock.destroy());
   // WebSocket upgrades: only /watch/:session, authed via ?token= (browsers can't set headers).

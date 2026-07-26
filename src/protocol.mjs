@@ -42,6 +42,8 @@ export const CODES = Object.freeze({
   PAUSED: 'PAUSED', // the session is paused at a breakpoint; resume or use debug tools, don't hang
   // M7 — dev-loop
   DEV_NO_URL: 'DEV_NO_URL', // the dev command printed no ready URL (or died) inside the budget
+  // Defect round 4 — one machine-wide daemon, many agents
+  FOREIGN_SESSIONS: 'FOREIGN_SESSIONS', // a destroy verb would take down another client's live sessions
 });
 
 export const HTTP_STATUS = Object.freeze({
@@ -60,7 +62,19 @@ export const HTTP_STATUS = Object.freeze({
   BAD_CHANNEL: 400,
   PAUSED: 409,
   DEV_NO_URL: 504,
+  FOREIGN_SESSIONS: 409,
 });
+
+/**
+ * Who is calling? One shared daemon serves every agent on the machine, so a session has to record
+ * WHOSE it is or a destroy verb cannot tell "clean up after me" from "take down everyone".
+ * Precedence: `--client` (the CLI writes it into the env before any request) > GLASSBOX_CLIENT >
+ * 'anonymous'. Anonymous is deliberately NOT an identity: anonymous callers own anonymous sessions,
+ * which keeps single-agent use working exactly as before.
+ */
+export const CLIENT_HEADER = 'x-glassbox-client';
+export const ANON_CLIENT = 'anonymous';
+export const clientId = () => String(process.env.GLASSBOX_CLIENT || ANON_CLIENT).slice(0, 64);
 
 /**
  * Build an Error carrying the structured wire shape on `.gb`
@@ -79,7 +93,13 @@ export async function daemonReq(d, method, route, body, ms = 30000) {
   // `connection: close` — refuse undici's keep-alive pool so a short-lived CLI's event loop
   // drains promptly after the response (and never trips libuv's UV_HANDLE_CLOSING assertion
   // on a race between process exit and socket teardown on Windows).
-  const opts = { method, headers: { authorization: `Bearer ${d.token}`, connection: 'close' }, signal: ctrl.signal };
+  // Every request carries the caller's identity — sessions are owned by whoever opened them, and
+  // the destroy verbs scope on it. One header, set in one place, so both faces and the tests agree.
+  const opts = {
+    method,
+    headers: { authorization: `Bearer ${d.token}`, connection: 'close', [CLIENT_HEADER]: clientId() },
+    signal: ctrl.signal,
+  };
   if (body !== undefined) {
     opts.headers['content-type'] = 'application/json';
     opts.body = JSON.stringify(body);
