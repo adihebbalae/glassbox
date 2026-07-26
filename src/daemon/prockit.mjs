@@ -46,13 +46,40 @@ export function taskkillTree(pid) {
   }
 }
 
-/** PIDs of every chromium (main + children) launched by glassbox, found via cmdline marker. */
+/**
+ * PIDs of every chromium (main + children) launched by glassbox, found via cmdline marker.
+ * The query is retried once: a WMI call can fail transiently — most likely exactly while eight
+ * chromium processes are tearing down — and the failure path returns the reassuring answer, zero.
+ * A counter that says "clean" when it means "I could not look" is the one thing an orphan check
+ * must never do.
+ */
 export function listGlassboxChromium() {
   const filter = "Name='chrome.exe' OR Name='headless_shell.exe'";
   const like = `*${CHROME_MARKER}*chrome-data*`;
+  const query = () => ps(
+    `Get-CimInstance Win32_Process -Filter "${filter}" | ` +
+      `Where-Object { $_.CommandLine -like '${like}' } | ` +
+      `ForEach-Object { $_.ProcessId }`
+  );
+  let out;
+  try { out = query(); } catch { try { out = query(); } catch { return []; } }
+  return out
+    .split(/\r?\n/)
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
+/**
+ * PIDs of every glassbox DAEMON process, found the same way chromium strays are: by command line,
+ * never by a bare PID. The discovery file names one daemon; a daemon whose file was already
+ * removed (a kill-all that raced a starting daemon) is invisible to it and keeps holding a browser
+ * — which is how a "clean" precondition check finds seven chromium processes it cannot explain.
+ */
+export function listGlassboxDaemons() {
+  const like = `*${CHROME_MARKER}*daemon.mjs*`;
   try {
     const out = ps(
-      `Get-CimInstance Win32_Process -Filter "${filter}" | ` +
+      `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ` +
         `Where-Object { $_.CommandLine -like '${like}' } | ` +
         `ForEach-Object { $_.ProcessId }`
     );

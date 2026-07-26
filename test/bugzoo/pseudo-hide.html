@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — pseudo hide</title>
+<style>
+  body { font-family: sans-serif; color: #111111; background: #ffffff; margin: 16px; }
+  a { color: #0b5cc4; }
+  /* An OPEN <details> whose UA pseudo the author froze shut. Nothing in the DOM ancestor chain
+     explains why the link cannot be seen — every ancestor computes content-visibility:visible, and
+     `closest('details:not([open]))` does not match because the details IS open. This is the residual
+     case behind W5's honesty fix: the audit must say the cause is outside the DOM chain instead of
+     asserting `content-visibility`, which the computed styles flatly contradict. */
+  details.frozen::details-content { content-visibility: hidden; }
+</style>
+</head>
+<body>
+<main>
+<h1>Pseudo-hide page</h1>
+<details class="frozen" open>
+  <summary>Open, but its content is frozen shut by the UA pseudo</summary>
+  <a id="frozen-link" href="/clean.html">A link nothing in the DOM chain explains</a>
+</details>
+</main>
+</body>
+</html>

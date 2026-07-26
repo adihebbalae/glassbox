@@ -9,7 +9,7 @@ import {
   PATHS, daemonReq, pingDaemon, readDaemonFile, ensureDaemon as ensureDaemonShared,
 } from './protocol.mjs';
 import {
-  verifyGlassboxPid, processAlive, taskkillTree, listGlassboxChromium, sweepOrphans,
+  verifyGlassboxPid, processAlive, taskkillTree, listGlassboxChromium, listGlassboxDaemons, sweepOrphans,
 } from './daemon/prockit.mjs';
 import { runDev, sweepDevOrphans } from './dev.mjs';
 
@@ -137,19 +137,37 @@ async function killAll() {
   }
   // Force-kill the daemon only after confirming the PID is really ours (PID-reuse guard).
   if (daemonPid && processAlive(daemonPid) && verifyGlassboxPid(daemonPid)) taskkillTree(daemonPid);
+  // …and then any daemon the discovery file did NOT name. A kill-all that races a starting daemon
+  // deletes the file while that daemon lives on, still holding a browser: every later kill-all then
+  // reports "daemon (none)" and every later run finds chromium it cannot account for. The reaper
+  // has to be able to find a daemon the same way it finds chromium — by command line, PID-verified.
+  const daemonStrays = [];
+  for (const pid of listGlassboxDaemons()) {
+    if (pid === process.pid || pid === daemonPid) continue;
+    if (verifyGlassboxPid(pid) && taskkillTree(pid)) daemonStrays.push(pid);
+  }
   const devOrphans = sweepDevOrphans(); // dev servers whose `glassbox dev` died without cleanup
   const before = listGlassboxChromium().length;
   sweepOrphans();
-  await delay(300);
-  const after = listGlassboxChromium().length;
+  // WAIT for the kill to land rather than sampling once after a fixed 300ms: `taskkill /T /F`
+  // returns immediately while the OS spends seconds tearing a browser's eight processes down, so
+  // the fixed delay let kill-all report "chromium 8 -> 0" while they were still alive — and the
+  // next proof's precondition then found chromium nobody could explain. Poll until really gone.
+  let after = listGlassboxChromium().length;
+  const gone = Date.now() + 15000; // generous: it exits the moment the count hits 0, and a reaper
+                                   // that returns early is worse than one that takes a few seconds
+  while (after > 0 && Date.now() < gone) {
+    await delay(250);
+    after = listGlassboxChromium().length;
+  }
   try {
     fs.unlinkSync(PATHS.daemonFile);
   } catch {
     /* already gone */
   }
   out(
-    { ok: true, daemonPid: daemonPid ?? null, chromiumBefore: before, chromiumAfter: after, devOrphans },
-    `kill-all done — daemon ${daemonPid ?? '(none)'}, chromium ${before} -> ${after}, dev orphans reaped ${devOrphans}`
+    { ok: true, daemonPid: daemonPid ?? null, daemonStrays, chromiumBefore: before, chromiumAfter: after, devOrphans },
+    `kill-all done — daemon ${daemonPid ?? '(none)'}${daemonStrays.length ? ` (+${daemonStrays.length} stray)` : ''}, chromium ${before} -> ${after}, dev orphans reaped ${devOrphans}`
   );
 }
 
@@ -275,7 +293,7 @@ function printResult(verb, r) {
     // `consoleErrors`, not `console`: these are console.error entries since the last navigation,
     // not the whole console buffer (dogfood observation — the short name invited misreading).
     console.log(`  counts: consoleErrors=${c.consoleErrors} pageerr=${c.pageErrors} net(failed=${c.netFailed} http=${c.netHttpError} hang=${c.netHanging} mixed=${c.netMixed}) a11y=${c.a11y} layout=${c.layout}`
-      + `${c.ignored404 ? ` ignored404=${c.ignored404}` : ''}${c.deferred ? ` deferred=${c.deferred}` : ''}`);
+      + `${c.ignored404 ? ` ignored404=${c.ignored404}` : ''}${c.deferred ? ` deferred=${c.deferred}` : ''}${c.collapsed ? ` collapsed=${c.collapsed}` : ''}`);
     for (const f of r.findings || []) console.log(`  [${f.severity}/${f.channel}] ${f.summary}`);
     const a = r.artifacts || {};
     console.log(`  report: ${a.report}`);
@@ -308,6 +326,7 @@ function printResult(verb, r) {
   if (verb === 'screenshot') {
     const fp = r.forcedPaint ? `, forced paint on ${r.forcedPaint} deferred container${r.forcedPaint > 1 ? 's' : ''}` : '';
     console.log(`screenshot -> ${r.path}  (${r.bytes} bytes, ${r.w}x${r.h}${fp})`);
+    if (r.warning) console.log(`  ! ${r.warning}`);
     return;
   }
   if (verb === 'wait') {

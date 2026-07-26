@@ -375,6 +375,15 @@ export async function verify(session, opts = {}) {
       detail: `deferred rendering, not a hide: ${g.samples.join(', ')}${g.count > g.samples.length ? ', …' : ''} paint on scroll. Scroll the section into view and re-verify to audit its contrast/occlusion.`,
     });
   }
+  // ONE info line per collapsed widget: a closed <details> or a hidden="until-found" region is
+  // deliberate progressive disclosure whose content paints on toggle (defect W5).
+  for (const g of baseLayout?.collapsed || []) {
+    findings.push({
+      channel: 'layout', severity: 'info',
+      summary: `${g.count} interactive element${g.count > 1 ? 's' : ''} in a ${g.kind} ${g.desc}${g.label ? ` ('${g.label}')` : ''}; open to audit`,
+      detail: `progressive disclosure, not a hide: ${g.samples.join(', ')}${g.count > g.samples.length ? ', …' : ''} paint when the widget opens. The UA hides them through a pseudo-element that no computed style reports, so nothing in the DOM chain names the cause. Open it (e.g. click its summary) and re-verify to audit contrast/occlusion inside.`,
+    });
+  }
   if (ignored404.length) {
     findings.push({
       channel: 'network', severity: 'info',
@@ -408,6 +417,7 @@ export async function verify(session, opts = {}) {
     a11y: axeGroups.length, layout: layoutCount,
     ...(ignored404.length || ignoredConsole.length ? { ignored404: ignored404.length + ignoredConsole.length } : {}),
     ...(baseLayout?.deferred?.length ? { deferred: baseLayout.deferred.reduce((n2, g) => n2 + g.count, 0) } : {}),
+    ...(baseLayout?.collapsed?.length ? { collapsed: baseLayout.collapsed.reduce((n2, g) => n2 + g.count, 0) } : {}),
   };
   // ok = no errors/pathologies. a11y is advisory (never flips ok — "no automated violations" ≠
   // accessible, and axe noise must not gate; guardrail-safe) and reported in counts only.
@@ -427,7 +437,8 @@ export async function verify(session, opts = {}) {
     errors: { console: consoleErrs, page: pageErrs, ...(ignoredConsole.length ? { ignored: ignoredConsole } : {}) },
     network: { ...net, ...(ignored404.length ? { ignored404 } : {}) },
     layout: baseLayout, sweep: comboFindings, theme: themeFindings,
-    modal: baseLayout?.modal || null, deferred: baseLayout?.deferred || [], overlay, a11y: axeGroups,
+    modal: baseLayout?.modal || null, deferred: baseLayout?.deferred || [], collapsed: baseLayout?.collapsed || [],
+    overlay, a11y: axeGroups,
     artifacts: { screenshots: shots, axe: axePath, netlog: netlogPath }, tookMs: 0,
   };
   full.tookMs = Date.now() - t0;

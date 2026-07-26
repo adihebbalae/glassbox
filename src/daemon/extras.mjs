@@ -139,34 +139,79 @@ export async function forcePaint(session) {
   };
 }
 
+// Is a clipped capture suspiciously featureless? (defect W6 backstop.) An empty webp is almost all
+// fixed overhead, so its size grows with the SQUARE ROOT of the area, while real content grows with
+// the area — which is why a per-pixel floor cannot work: measured, a blank 1280×168 clip is 462 B
+// (0.0022 B/px) but a large, legitimately sparse 1280×1432 block is 6486 B (0.0035 B/px), a LOWER
+// rate than the blank. A sqrt floor separates every observed case: blank 462/970 fire, painted
+// 6380/24626 and the sparse 6486 do not. It only applies to an element that reports itself visible
+// AND has text or media — a plain solid-colour box is legitimately featureless.
+export const blankFloorBytes = (w, h) => Math.round(300 + 2.2 * Math.sqrt(Math.max(1, w * h)));
+
+/**
+ * Read, in ONE call on the resolved element: whether it is visible, whether it has anything to
+ * paint, and the page scroll offsets. The offsets matter because `DOM.getBoxModel` returns
+ * VIEWPORT-relative coordinates (measured: y = -1500 at scrollY 1500, exactly like
+ * getBoundingClientRect) while `Page.captureScreenshot` wants the clip in PAGE coordinates.
+ */
+const CLIP_PROBE_FN = `function(){
+  var vis = true;
+  try { vis = this.checkVisibility({ checkOpacity:true, checkVisibilityCSS:true, contentVisibilityAuto:true }); } catch(e) {}
+  var text = '';
+  try { text = (this.innerText || this.textContent || '').trim(); } catch(e) {}
+  var media = false;
+  try { media = !!this.querySelector('img,svg,canvas,video,picture,iframe'); } catch(e) {}
+  return { visible: !!vis, hasContent: text.length > 0 || media, scrollX: window.scrollX || 0, scrollY: window.scrollY || 0 };
+}`;
+
 /**
  * Standalone screenshot via CDP captureScreenshot (webp q70) → an on-disk path under shots/, never
  * inline bytes (Claude Code's 10-20x ImageContent tax, research 04 §4.6). `selector` clips to the
- * element's border box; `fullPage` captures beyond the viewport (forcing deferred
- * `content-visibility:auto` sections to paint first — pass `forcePaint:false` to opt out);
+ * element's border box; `fullPage` captures beyond the viewport; both force deferred
+ * `content-visibility:auto` sections to paint first (pass `forcePaint:false` to opt out);
  * `theme` temporarily emulates the color-scheme then restores the session's own.
- * Returns {ok, path, bytes, w, h, forcedPaint?}.
+ * Returns {ok, path, bytes, w, h, forcedPaint?, warning?}.
  */
 export async function screenshotAction(session, body) {
   const { cdp, page } = session;
   await cdp.send('Page.enable').catch(() => {});
   const theme = body.theme === 'light' || body.theme === 'dark' ? body.theme : null;
   if (theme) await page.emulateMedia({ colorScheme: theme }).catch(() => {});
-  // Only the full-page path needs it: a viewport/element capture paints what is actually on screen.
-  const wantForce = !!body.fullPage && body.forcePaint !== false;
+  // W6: the old rule was "only the full-page path needs a forced paint — a viewport or element
+  // capture paints what is actually on screen". False on both halves. An element inside an
+  // unpainted `content-visibility:auto` section clips to blank paper exactly like the full-page
+  // case did, so the selector path force-paints too; and the clip's coordinate basis was wrong
+  // whenever the page was scrolled (see below), which is what actually produced the filed blanks.
+  const wantForce = (!!body.fullPage || !!body.selector) && body.forcePaint !== false;
   const forced = wantForce ? await forcePaint(session) : { count: 0, restore: async () => {} };
   try {
     const params = { format: 'webp', quality: 70 };
-    let w, h;
+    let w, h, probe = null;
     if (body.selector) {
       const { result } = await cdp.send('Runtime.evaluate', { expression: `document.querySelector(${JSON.stringify(body.selector)})`, returnByValue: false });
       if (!result || !result.objectId) throw gbErr(CODES.NO_TARGET, `selector '${body.selector}' matched nothing to screenshot`, { field: 'selector', correction_hint: 'check the selector' });
       let box;
-      try { box = (await cdp.send('DOM.getBoxModel', { objectId: result.objectId })).model; }
-      finally { cdp.send('Runtime.releaseObject', { objectId: result.objectId }).catch(() => {}); }
+      try {
+        box = (await cdp.send('DOM.getBoxModel', { objectId: result.objectId })).model;
+        const pr = await cdp.send('Runtime.callFunctionOn', { objectId: result.objectId, functionDeclaration: CLIP_PROBE_FN, returnByValue: true }).catch(() => null);
+        probe = pr?.result?.value || null;
+      } finally { cdp.send('Runtime.releaseObject', { objectId: result.objectId }).catch(() => {}); }
       const b = quadBox(box.border);
       if (b.width < 1 || b.height < 1) throw gbErr(CODES.NO_TARGET, `selector '${body.selector}' has a zero-size box`, { field: 'selector' });
-      params.clip = { x: b.x, y: b.y, width: b.width, height: b.height, scale: 1 };
+      // THE W6 BUG, measured: `DOM.getBoxModel` hands back VIEWPORT-relative coordinates while
+      // `Page.captureScreenshot` wants the clip in PAGE coordinates. They agree only at scroll 0,
+      // so every capture taken after ANY scroll silently framed the wrong region — and since
+      // clicking a control scrolls it into view, one click was enough to poison every element
+      // screenshot for the rest of the session (the filed repro blamed the <details> it clicked;
+      // the details was innocent, the scroll it caused was not). Convert the basis explicitly, and
+      // capture beyond the viewport so an element below the fold is captured where it really is.
+      params.clip = {
+        x: b.x + (probe?.scrollX || 0),
+        y: b.y + (probe?.scrollY || 0),
+        width: b.width, height: b.height, scale: 1,
+      };
+      params.captureBeyondViewport = true;
+      params.fromSurface = true;
       w = Math.round(b.width); h = Math.round(b.height);
     } else if (body.fullPage) {
       params.captureBeyondViewport = true;
@@ -182,8 +227,15 @@ export async function screenshotAction(session, body) {
     const buf = Buffer.from(data, 'base64');
     const p = session.journal.alloc('shots', `shot-${Date.now()}.webp`);
     fs.writeFileSync(p, buf);
-    session.journal.log('command', { op: 'screenshot', path: p, bytes: buf.length, ...(forced.count ? { forcedPaint: forced.count } : {}) });
-    return { ok: true, path: p, bytes: buf.length, w, h, ...(wantForce ? { forcedPaint: forced.count } : {}) };
+    // Backstop (W6, same principle as W2): never hand back a blank primary artifact silently. If a
+    // visible element with something to paint clipped to a near-featureless image, say so in the
+    // result — the caller can re-shoot the viewport, which uses a different capture path.
+    let warning;
+    if (body.selector && probe?.visible && probe?.hasContent && w > 0 && h > 0 && buf.length < blankFloorBytes(w, h)) {
+      warning = `clip may be blank: ${buf.length} bytes for a ${w}×${h} region, below the ${Math.round(blankFloorBytes(w, h))}-byte floor, on an element that reports itself visible with content. It was already force-painted before capture; take a viewport screenshot (no selector) to cross-check.`;
+    }
+    session.journal.log('command', { op: 'screenshot', path: p, bytes: buf.length, ...(forced.count ? { forcedPaint: forced.count } : {}), ...(warning ? { warning } : {}) });
+    return { ok: true, path: p, bytes: buf.length, w, h, ...(wantForce ? { forcedPaint: forced.count } : {}), ...(warning ? { warning } : {}) };
   } finally {
     await forced.restore();
     if (theme) await page.emulateMedia({ colorScheme: session.colorScheme || null }).catch(() => {});

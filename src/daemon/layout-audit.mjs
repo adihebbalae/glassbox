@@ -24,7 +24,7 @@ export function layoutAuditSource(cfg = {}) {
   const cap = CFG.cap;
   const docEl = document.documentElement;
   const root = CFG.scope ? (document.querySelector(CFG.scope) || document) : document;
-  const out = { overflow:[], occlusion:[], invisible:[], zeroSize:[], brokenImages:[], contrast:[], cls:[], truncated:{}, modal:null, deferred:[] };
+  const out = { overflow:[], occlusion:[], invisible:[], zeroSize:[], brokenImages:[], contrast:[], cls:[], truncated:{}, modal:null, deferred:[], collapsed:[] };
   const SEL = 'a,button,input,select,textarea,[onclick],[role],[tabindex]';
 
   const describe = (el) => {
@@ -91,6 +91,28 @@ export function layoutAuditSource(cfg = {}) {
   // 10 such warnings for links that render perfectly on scroll. They collapse to one info line per
   // deferred container and are never counted as pathology. \`content-visibility: hidden\`, by
   // contrast, IS a hide primitive and is treated like display:none: deliberate, not reported.
+  // FOURTH BUCKET (defect W5): a CLOSED native \`<details>\` hides its slotted content through the UA
+  // \`::details-content\` pseudo-element — which is not a node in the parentElement chain, so the walk
+  // below finds \`content-visibility: visible\` on the element AND every DOM ancestor and used to fall
+  // through to a generic "cannot be seen (content-visibility)" warning: wrong in the count register
+  // (10 lines for one collapsed widget) and wrong about the cause it named. A native accordion is
+  // deliberate progressive disclosure — it paints on toggle exactly as cv:auto paints on scroll — so
+  // it gets the same treatment: one COLLAPSED info line per widget, never pathology. \`hidden
+  // ="until-found"\` (revealed by find-in-page) is the same family and rides along; both are found by
+  // \`closest()\`, which sees what no computed style can.
+  const collapseGroups = new Map();
+  const pseudoHide = (el) => {
+    let host = null;
+    try { host = el.closest('details:not([open])'); } catch(e) { host = null; }
+    if (host) {
+      let label = '';
+      try { const s = host.querySelector(':scope > summary'); label = s ? (s.innerText || s.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60) : ''; } catch(e) { label = ''; }
+      return { host, kind: 'collapsed <details>', label };
+    }
+    try { host = el.closest('[hidden="until-found"]'); } catch(e) { host = null; }
+    if (host) return { host, kind: 'hidden="until-found" region', label: '' };
+    return null;
+  };
   const deferGroups = new Map();
   const cvSource = (el) => {
     let auto = null, hidden = null;
@@ -111,6 +133,17 @@ export function layoutAuditSource(cfg = {}) {
         const cs0 = getComputedStyle(el);
         let why, src = el;
         if (cs0.visibility === 'visible' && parseFloat(cs0.opacity) !== 0) {
+          // A pseudo-element hide is invisible to computed style, so it is asked FIRST — otherwise
+          // hidden="until-found" (which computes to content-visibility:hidden on its own container)
+          // would be silently dropped as a deliberate hide instead of being counted and named.
+          const ph = pseudoHide(el);
+          if (ph) {
+            const g = collapseGroups.get(ph.host) || { desc: describe(ph.host), kind: ph.kind, label: ph.label, count: 0, samples: [] };
+            g.count += 1;
+            if (g.samples.length < 3) g.samples.push(describe(el));
+            collapseGroups.set(ph.host, g);
+            continue;
+          }
           // not hidden by visibility/opacity → the only remaining cause is content-visibility
           const cv = cvSource(el);
           if (cv.hidden) continue;                      // deliberate hide, like display:none
@@ -134,7 +167,15 @@ export function layoutAuditSource(cfg = {}) {
           let n = el;
           while (n && parseFloat(getComputedStyle(n).opacity) !== 0) n = n.parentElement;
           src = n || el;
-        } else { why = 'content-visibility'; src = el; }
+        } else {
+          // Nothing in the DOM ancestor chain explains it (W5's second half). Saying
+          // "content-visibility" here asserted a cause that the computed styles CONTRADICT — every
+          // ancestor reads 'visible'. Report the honest thing instead: we know it is unpainted, we
+          // know the reason is not in the element's DOM chain (a UA pseudo-element, a shadow root,
+          // a closed popover), and we say so rather than inventing a mechanism.
+          why = 'cause is outside the DOM ancestor chain — every ancestor computes content-visibility:visible, so a UA pseudo-element or shadow root is hiding it (open/expand the surrounding widget and re-verify)';
+          src = el;
+        }
         if (src === el) {
           cappedPush(out.invisible, 'invisible', { type:'invisible', desc:describe(el), detail:'takes up ' + Math.round(r.width) + '×' + Math.round(r.height) + 'px of layout but cannot be seen (' + why + ')' });
         } else {
@@ -161,6 +202,9 @@ export function layoutAuditSource(cfg = {}) {
   }
   for (const g of deferGroups.values()) {
     if (out.deferred.length < cap) out.deferred.push({ type:'deferred', desc:g.desc, count:g.count, samples:g.samples });
+  }
+  for (const g of collapseGroups.values()) {
+    if (out.collapsed.length < cap) out.collapsed.push({ type:'collapsed', desc:g.desc, kind:g.kind, label:g.label, count:g.count, samples:g.samples });
   }
 
   // --- broken images ---------------------------------------------------------

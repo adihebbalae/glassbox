@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — details</title>
+<style>
+  body { font-family: sans-serif; color: #111111; background: #ffffff; margin: 0; }
+  /* header: the W6 subject — a painted element at document top, far from the <details> */
+  header { background: #22304a; color: #ffffff; padding: 18px 16px; }
+  header a { color: #cfe0ff; }
+  .band { padding: 16px; }
+  a { color: #0b5cc4; }
+  summary { cursor: pointer; padding: 8px 0; font-weight: bold; }
+  /* The WCII shape: a native <details> used for progressive disclosure ("show the chart &
+     receipts"). Closed, its slotted content is hidden by the UA ::details-content pseudo —
+     a hide that NO DOM-ancestor walk can see (W5), and whose open transition leaves the
+     compositor in a state where a clipped capture returns unpainted pixels (W6). */
+  details.disclose { border: 1px solid #888888; padding: 8px 12px; margin: 12px 0; }
+  /* The modern accordion idiom: animate the UA pseudo open. This keeps the compositor in the
+     ::details-content transition state for the length of the animation — which is exactly when
+     a CLIPPED capture came back unpainted (W6). */
+  details.disclose::details-content {
+    block-size: 0;
+    overflow: hidden;
+    transition: content-visibility 700ms allow-discrete, block-size 700ms;
+  }
+  details.disclose[open]::details-content { block-size: auto; }
+  .cell { display: inline-block; width: 22px; height: 16px; margin: 1px; }
+  .defer { content-visibility: auto; contain-intrinsic-size: 900px; }
+  .filler { height: 1400px; padding: 16px; }
+  .rent-lede { background: #f2f4f8; border: 1px solid #99a; padding: 14px; color: #111111; }
+  /* A block that reports itself VISIBLE and carries text, yet paints nothing — the blank-clip
+     guardrail's subject (W6). Invisible text on a matching background is a real UI bug class, so
+     a warning here is the guardrail doing its job, not a false positive. */
+  #blankbox { width: 600px; height: 200px; background: #ffffff; color: transparent; }
+</style>
+</head>
+<body>
+<header id="top">
+  <h1>Details page</h1>
+  <p>A header with real painted pixels, sitting at document top — nowhere near the disclosure.</p>
+  <a id="hlink" href="/clean.html">A header link</a>
+</header>
+
+<main class="band">
+  <p>Progressive disclosure below. Closed by default.</p>
+
+  <details class="disclose">
+    <summary id="disclose-summary">Show the rent chart &amp; receipts</summary>
+    <!-- 10 interactive descendants: pre-fix these produced 10 "invisible (content-visibility)"
+         warnings even though computed content-visibility is `visible` on every DOM ancestor. -->
+    <svg id="rent-svg" class="rent-svg" role="img" aria-label="Rent history" width="600" height="120">
+      <rect x="0" y="0" width="600" height="120" fill="#eef2ff"></rect>
+      <polyline points="0,100 150,80 300,60 450,50 600,30" fill="none" stroke="#0b5cc4" stroke-width="3"></polyline>
+    </svg>
+    <ul id="receipts">
+      <li><a href="/clean.html">Archived snapshot 2022-08</a></li>
+      <li><a href="/clean.html">Archived snapshot 2023-01</a></li>
+      <li><a href="/clean.html">Archived snapshot 2023-07</a></li>
+      <li><a href="/clean.html">Archived snapshot 2024-02</a></li>
+      <li><a href="/clean.html">Archived snapshot 2024-09</a></li>
+      <li><a href="/clean.html">Archived snapshot 2025-03</a></li>
+      <li><a href="/clean.html">Archived snapshot 2025-10</a></li>
+      <li><a href="/clean.html">Archived snapshot 2026-04</a></li>
+      <li><a href="/clean.html">Archived snapshot 2026-07</a></li>
+    </ul>
+  </details>
+
+  <!-- same pseudo-hide family: revealed by find-in-page, not by any DOM ancestor style -->
+  <div id="untilfound" hidden="until-found">
+    <button id="uf1" type="button">Hidden until found</button>
+    <a id="uf2" href="/clean.html">Also hidden until found</a>
+  </div>
+</main>
+
+<div class="filler">Filler so the lede below sits well past the first viewport.</div>
+
+<!-- The WCII arrangement that broke clipped captures: a deferred (content-visibility:auto)
+     section that itself contains a <details>. Toggling that details is the W6 trigger. -->
+<section id="late" class="defer band">
+  <h2>Deferred section with its own disclosure</h2>
+  <details class="disclose" id="d2">
+    <summary id="d2-summary">Show the deferred receipts</summary>
+    <ul>
+      <li><a href="/clean.html">Deferred snapshot A</a></li>
+      <li><a href="/clean.html">Deferred snapshot B</a></li>
+    </ul>
+  </details>
+</section>
+
+<section class="band">
+  <p class="rent-lede" id="lede">
+    A dense block far down the page: the subject for a scrolled selector capture, which must be
+    both painted and correctly framed (the clip is document-absolute, the capture used to be
+    viewport-relative — they only agree at scrollY 0).
+    <span id="pattern"></span>
+  </p>
+</section>
+
+<div id="blankbox">This text is transparent, so this box clips to a featureless image.</div>
+
+<footer class="band"><p>Footer.</p></footer>
+
+<script>
+  // high-entropy paint inside the lede so "was this actually painted?" is measurable by size
+  var p = document.getElementById('pattern');
+  var html = '';
+  for (var i = 0; i < 260; i++) {
+    var r = (i * 41) % 256, g = (i * 97) % 256, b = (i * 59) % 256;
+    html += '<span class="cell" style="background:rgb(' + r + ',' + g + ',' + b + ')"></span>';
+  }
+  p.innerHTML = html;
+</script>
+</body>
+</html>
