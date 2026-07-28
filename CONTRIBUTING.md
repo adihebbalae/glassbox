@@ -32,9 +32,16 @@ Node 22+. No build step — it is plain ESM, and what you read is what runs.
 ## Tests
 
 ```bash
-npm test              # everything, against a real browser (~17 min)
+npm test              # everything, against a real browser (~6 min)
 npm run test:m3       # or any single milestone
 ```
+
+> **Do not run the suite while a Glassbox daemon is doing work you care about.** It shares your real
+> state root — no test sets `GLASSBOX_HOME`, despite three comments that used to claim otherwise —
+> and every milestone opens with `kill-all`. A daemon whose sessions were touched in the last five
+> minutes is protected by the ownership guard and the run will just fail its precondition; one
+> that has been **idle longer than five minutes gets shut down and its sessions destroyed**. Issue
+> #2 tracks real isolation; §11.7 of `docs/01-architecture.md` has the full account.
 
 Every proof drives the real CLI and daemon against a real Chromium, and every one ends by
 asserting that `kill-all` leaves zero orphan processes. There are no mocks — a mocked browser

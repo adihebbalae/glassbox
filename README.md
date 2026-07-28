@@ -162,7 +162,7 @@ the model learns the workflow, not just the schemas.
 v0.1.0, first complete build. Being honest about the edges, because a verification tool that
 overstates itself is worse than useless:
 
-- **Windows 11 / Node 24** — developed here. Full suite green: **13 modules, 293 checks**.
+- **Windows 11 / Node 24** — developed here. Full suite green: **13 modules, 296 checks**.
 - **Linux, in an agent sandbox** — proven in M13. The same codebase runs in an ephemeral
   container behind a platform seam, full suite green. The process reaper is two implementations
   behind one dispatch (`taskkill`/WMI on win32, `/proc` on POSIX).
@@ -178,7 +178,14 @@ overstates itself is worse than useless:
   The platform seam is really win32/linux/darwin, not win32/POSIX. Tracked in issue #1; fixes are
   written but unverifiable without a Mac. If you have one, that's the most useful contribution
   available right now.
-- **No CI yet.** The suite drives a real Chromium for ~17 minutes; wiring that into Actions is
+- **The suite is not isolated from your live daemon.** It runs against your real state root and
+  opens each milestone with `kill-all`, so a Glassbox daemon left idle more than five minutes on the
+  same machine will be shut down by a test precondition. Three source comments claimed the suite
+  set `GLASSBOX_HOME` to prevent exactly this. None of the thirteen tests do. What actually protects
+  a *busy* daemon is the session-ownership guard, which is a different mechanism arrived at for a
+  different reason — the right protection by luck, not design. Issue #2; §11.7 of
+  [`docs/01-architecture.md`](docs/01-architecture.md).
+- **No CI yet.** The suite drives a real Chromium for ~6 minutes; wiring that into Actions is
   the next infrastructure job.
 
 Also deliberately out of scope for v1: cloud/remote browsers, stealth or CAPTCHA anything,
@@ -451,12 +458,12 @@ never hydrated). The result is still complete — it just wasn't quiet.
 ## Tests
 
 ```bash
-npm test              # 13 modules, 293 checks, against a real browser (~17 min)
+npm test              # 13 modules, 296 checks, against a real browser (~6 min)
 npm run test:m8       # the system-level pass: parallel stress, seed sweep, artifact contract
 npm run test:m9       # defect round 1 regressions (each check fails on the pre-fix build)
 npm run test:m10      # defect round 2 (deferred content, cold/warm loads, 404 allowlist)
 npm run test:m11      # defect round 3 (collapsed <details>, clipped-capture framing)
-npm run test:m12      # defect round 4 (session ownership, scoped destroy verbs)
+npm run test:m12      # defect round 4 (session ownership, scoped destroy verbs, --mine blast radius)
 npm run test:m13      # the platform seam + sandbox backend + HAR bridge
 
 # OPTIONAL, not in npm test — point it at any project with a `dev` script:
@@ -466,7 +473,7 @@ npm run test:live -- --cwd ../my-astro-site
 Each proof drives the real CLI/daemon against a real Chromium, and every one ends by asserting
 `kill-all` leaves zero orphan processes.
 
-`test/bugzoo/` is the seeded-bug site the proofs verify against — 17 deliberate bug classes plus a
+`test/bugzoo/` is the seeded-bug site the proofs verify against — 18 deliberate bug classes plus a
 clean page as the false-positive check, plus the pages seeded from four rounds of **field defects**
 found by dogfooding Glassbox against real sites: an occluded-but-clickable control, a boot-time
 theme, a Tailwind class theme, a modal backdrop, an invisible drawer, delegated listeners, deferred
@@ -476,6 +483,13 @@ a UA-pseudo hide no computed style can explain.
 Those four rounds are written up in `docs/defects-*.md` — every defect the tool got *wrong* in the
 field, its root cause, and the regression test that now pins the fix. That log is the most useful
 thing in this repo if you are evaluating whether to trust it.
+
+A fifth pass, the pre-publish audit, is in §11.7–§11.8 of [`docs/01-architecture.md`](docs/01-architecture.md)
+rather than a defects file, because it was read out of the source rather than found in the field. The
+one that mattered: `kill-all --mine` reached the machine-wide chromium sweep whenever the daemon's
+discovery file was missing, so the scoped destroy verb went machine-wide in exactly the case where it
+could not establish that anything belonged to the caller. Measured 8 → 0 on another client's browser;
+now 8 → 8. Pinned by m12 `b3`.
 
 ### It diagnosed itself, unprompted, while being filmed
 

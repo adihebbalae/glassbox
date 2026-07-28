@@ -5,7 +5,10 @@
 //
 //   a  a bare kill-all from one client REFUSES while another client's sessions are live, naming
 //      them — and that client's sessions are still there and still usable afterwards
-//   b  `kill-all --mine` destroys only the caller's, leaving the daemon up for everyone else
+//   b  `kill-all --mine` destroys only the caller's, leaving the daemon up for everyone else —
+//      and (b3, added 2026-07-28) refuses the machine-wide sweep when the discovery file is gone,
+//      which is the one path where the ownership guard could not engage
+
 //   c  `kill-all --force` keeps the full machine-wide clean slate (wedge recovery)
 //   d  NO_SESSION carries the daemon's identity, so "the daemon churned under me" is one call
 //   e  the MCP shim owns its sessions automatically (mcp-<pid>) — MCP agents get this for free
@@ -117,6 +120,27 @@ async function run() {
     (after?.sessions || []).length === 2 && (after?.sessions || []).every((s) => s.client === A)
     && /daemon running/.test(status.stdout) && /2 session/.test(status.stdout),
     `left=${(after?.sessions || []).map((s) => s.name).join(',')} | ${status.stdout.trim()}`);
+
+  // ===== b3 — --mine must not fall through to the machine-wide sweep ==========
+  // Found 2026-07-28 in the publish audit, and it is the same wound as `a` one layer down: the
+  // ownership guard only engages when the daemon is REACHABLE and says other clients are present.
+  // Delete the discovery file and `d` is null, /shutdown never happens, and control used to reach
+  // sweepOrphans() — which matches on the chrome-data marker and has no notion of an owner. So
+  // `--mine` killed every agent's browser in exactly the case where it could not establish that any
+  // of them were the caller's. Client A's two sessions are live here, and B is the caller.
+  const savedDaemonFile = fs.readFileSync(PATHS.daemonFile, 'utf8');
+  const liveBefore = listGlassboxChromium().length;
+  fs.unlinkSync(PATHS.daemonFile);
+  const orphanMine = json(cli(['--json', 'kill-all', '--mine'], B));
+  const liveAfter = listGlassboxChromium().length;
+  fs.writeFileSync(PATHS.daemonFile, savedDaemonFile); // restore: d/e/f below need the daemon back
+  const survived = json(cli(['--json', 'session', 'ls'], A));
+  check('b3 `kill-all --mine` refuses the machine-wide sweep when it cannot see a daemon to scope on',
+    liveBefore > 0 && liveAfter === liveBefore && orphanMine?.swept === false
+    && (orphanMine?.orphanDaemons || []).length > 0
+    && (survived?.sessions || []).filter((s) => s.client === A).length === 2,
+    `chromium ${liveBefore} -> ${liveAfter} swept=${orphanMine?.swept} ` +
+    `orphanDaemons=${JSON.stringify(orphanMine?.orphanDaemons)} aSessions=${(survived?.sessions || []).filter((s) => s.client === A).length}`);
 
   // ===== d — which daemon answered? (the round-4 observation) =================
   const gone = cli(['--json', 'eval', '1+1', '-s', 'no-such-session'], A);

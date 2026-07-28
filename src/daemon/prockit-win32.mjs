@@ -55,9 +55,11 @@ export function taskkillTree(pid) {
  */
 export function listGlassboxChromium() {
   const filter = "Name='chrome.exe' OR Name='headless_shell.exe'";
-  // The literal chrome-data path, not the loose 'glassbox' string: a custom GLASSBOX_HOME (which
-  // the test suite sets, so a run never reaps a developer's live sessions) does not have to contain
-  // the word glassbox, and a reaper that matches nothing reports a reassuring, wrong zero.
+  // The literal chrome-data path, not the loose 'glassbox' string: a custom GLASSBOX_HOME does not
+  // have to contain the word glassbox, and a reaper that matches nothing reports a reassuring,
+  // wrong zero. (This used to say the test suite sets GLASSBOX_HOME "so a run never reaps a
+  // developer's live sessions." It does not — see §11.7 of docs/01-architecture.md, issue #2.
+  // The suite shares your real root, and this reaper is machine-wide against it.)
   const like = `*${chromeDataDir().replace(/'/g, "''")}*`;
   const query = () => ps(
     `Get-CimInstance Win32_Process -Filter "${filter}" | ` +

@@ -77,6 +77,14 @@ lifecycle). White-box features go through `context.newCDPSession(page)` raw CDP.
   Anonymous is deliberately not an identity — anonymous callers own anonymous sessions, so the
   single-agent path is unchanged.
 
+  **Corrected 2026-07-28 (§11.8).** All of that machinery lives on the daemon, so it only engages
+  when the daemon is *reachable*. With the discovery file missing or stale, `killAll()` skipped the
+  `/shutdown` request entirely and fell through to `sweepOrphans()`, which matches chromium on the
+  chrome-data marker and has no notion of an owner — so `--mine` went machine-wide in exactly the
+  case where it could not establish that anything was the caller's. `--mine` now asks whether any
+  daemon is still alive before sweeping: none alive means nobody can own anything and the sweep is
+  the normal end-of-task cleanup; an unreferenced daemon alive means `--force` is the verb you want.
+
 ## 3. Observation model (research 06 + spike 3)
 
 - Default observation = **distilled hybrid DOM+AX snapshot**: merged from CDP DOM + AXTree,
@@ -323,12 +331,20 @@ all of the same shape — *a check that cannot look must not report "clean"*:
   suite's opening `0 precondition clean` and closing `zero strays` checks therefore **passed
   vacuously** while browsers leaked between tests. They now report real counts (18 → 0).
 - The stray marker was the bare string `'glassbox'`, on the assumption the state root contains it.
-  Point `GLASSBOX_HOME` elsewhere — which the suite must, so a run never reaps a developer's live
-  sessions — and the reaper matched nothing forever. It now matches the actual `chrome-data` path,
-  and daemons match the resolved daemon entry rather than a directory name.
+  Point `GLASSBOX_HOME` elsewhere and the reaper matched nothing forever. It now matches the actual
+  `chrome-data` path, and daemons match the resolved daemon entry rather than a directory name.
+  (This bullet used to add "*which the suite must*, so a run never reaps a developer's live
+  sessions." It doesn't. See §11.7.)
 - **A zombie is not alive.** `process.kill(pid,0)` succeeds on a zombie, so a killed child reads as
   running; in a container whose PID 1 does not reap, every "is the tree down?" loop spins to its
   timeout and reports a leak that does not exist. `processAlive` now reads the state field.
+- **Report what you killed, not what was left.** `kill-all`'s `before` count was sampled just above
+  `sweepOrphans()` — after the graceful `/shutdown` had already closed the browser — so the command
+  routinely printed `chromium 0 -> 0` on a run that had just taken nine processes down. Every number
+  in it was true and the sentence was still misleading, because a reader takes `0 -> 0` to mean
+  "there was nothing here." It now samples before the shutdown request. m1's stray check has counted
+  independently all along and printed the disagreement in its detail line for weeks, which is an
+  argument for putting the raw numbers in a passing check's output and not only in a failing one.
 
 `dev`'s POSIX tree kill was a bare `kill(-pid)`; a `shell:true` grandchild can escape the group, so
 it now goes through the same `/proc` walk.
@@ -339,3 +355,74 @@ it now goes through the same `/proc` walk.
 different cwd, and the test runner could each compute a different root and then disagree about
 where `daemon.json` lives — a discovery file nobody can find is indistinguishable from a dead
 daemon. The root is now always absolute: `GLASSBOX_HOME` > platform default > tmp.
+
+### 11.7 The safeguard that existed only in a comment
+
+Found 2026-07-28 while auditing for publish. Three source comments and §11.5 above asserted that the
+test suite points `GLASSBOX_HOME` at an isolated root "so a run never reaps a developer's live
+sessions." **No test sets `GLASSBOX_HOME`.** Not one of the thirteen. They pass `GLASSBOX_NO_OPEN`
+through `env:` and inherit everything else, so the suite runs against the same real state root — and
+therefore the same `chrome-data` marker — that a live daemon on that machine is using. Every
+milestone opens with `cli(['kill-all'])` as its precondition and closes with one as a safety net.
+
+What actually stands between that and a developer losing live work is **not** the claimed mechanism.
+It is the session-ownership guard added in `defects-4`: plain `kill-all` POSTs `/shutdown` with
+`{mine:false, force:false}`, and the daemon refuses with `FOREIGN_SESSIONS` when another client's
+sessions were used within the last five minutes, which makes `killAll()` return before
+`sweepOrphans()` ever runs. So the protection is real, it is just somewhere else entirely, and it
+was arrived at for a different reason. The residual hazard is genuine and bounded: a foreign daemon
+**idle more than five minutes** is shut down and its sessions destroyed by a test precondition.
+
+Two things worth keeping, both of which rhyme with §11.1:
+
+- A safeguard asserted in a comment is not a safeguard, and unlike a wrong measurement nothing in a
+  test run can contradict it — the tests are the thing that would trip it, and they were fine,
+  because the mitigation they were relying on was one they never named.
+- The reaper's marker was hardened (§11.5) *specifically for* a custom `GLASSBOX_HOME` that nothing
+  sets. The hardening is still correct — it matters the moment isolation lands — but it was written
+  against an imagined configuration, and imagining a configuration is how you stop checking it.
+
+Not fixed here, deliberately: real isolation means making `PATHS` lazy (it freezes `stateRoot()` at
+import, so an ESM test body cannot set the env before the module graph resolves) and then setting
+the env in thirteen test files. That is a harness change with a real chance of destabilising a suite
+that is green, and it is the wrong week for it. Tracked as issue #2; until it lands, `CONTRIBUTING.md`
+says plainly what running the suite will do to a live daemon.
+
+### 11.8 `--mine` was machine-wide whenever it could not see a daemon
+
+Found in the same audit, and unlike §11.7 this one was live. Round 4 (§2, "Ownership") gave the
+destroy verbs an owner model, and every part of it lives on the **daemon**: `--mine` POSTs
+`/shutdown {mine:true}`, the daemon destroys only the caller's sessions, and if other clients remain
+it replies `daemonStopping:false` so the CLI returns before the process-level sweep. That is correct
+and tested (m12 `b1`/`b2`).
+
+It only engages when the daemon is reachable. `readDaemonFile()` returning null — a stale discovery
+file, a `kill-all` that raced a starting daemon, an orphan — skipped the request entirely and fell
+through to `sweepOrphans()`, which matches chromium on the chrome-data marker and knows nothing about
+owners. So `--mine` killed every agent's browser on the machine in precisely the case where it had
+*less* evidence about ownership, not more.
+
+Measured with m12's fixture (client A holding two live sessions, B calling):
+
+| `kill-all --mine`, discovery file deleted | chromium | A's sessions per `session ls` |
+| --- | --- | --- |
+| before the fix | **8 → 0** | still reports 2 |
+| after the fix | **8 → 8**, `swept:false` | still reports 2 |
+
+The second column is the part worth staring at. The daemon process itself survived, so its session
+records survived — `session ls` went on reporting two live sessions whose browser had just been
+destroyed underneath them. A list that confidently names sessions that can no longer do anything is
+the same failure as a reaper reporting a reassuring zero, one layer up.
+
+The fix is not to make `--mine` inert when the daemon is gone: sweeping your own leaked chromium
+after the daemon has already exited *is* the normal end-of-task cleanup, and refusing would leak a
+browser per task for the single-agent majority. It asks the question that actually decides it — is
+any daemon still alive (`listGlassboxDaemons()`, PID-verified, which already existed for `--force`)?
+None alive, nobody can own anything, sweep. One alive that the discovery file does not name, it may
+be serving someone right now, so refuse and name `--force`, where machine-wide power already lives
+by design (D12). Pinned by m12 `b3`, which reports `chromium 8 -> 0` against every commit before it.
+
+The general shape, and it is the third instance this week: **a guard that lives at one layer does not
+protect the paths that bypass that layer.** Ownership was enforced in the daemon; the sweep runs in
+the CLI and reaches the OS directly. Nothing about the daemon-side model was wrong. It just wasn't
+where the destruction happened.

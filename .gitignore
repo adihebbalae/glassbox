@@ -3,6 +3,12 @@ dist/
 .sessions/
 *.log
 
+# runtime state, if GLASSBOX_HOME ever points into the checkout. The default root is outside the
+# repo (%LOCALAPPDATA%/glassbox, $XDG_STATE_HOME/glassbox, ~/.glassbox), but pointing it here is the
+# obvious thing to try, and chrome-data/ is a full Chromium profile — hundreds of MB, one `git add
+# -A` away from the history.
+glassbox/
+
 # local scratch / packaging junk
 _to_delete/
 *.tgz

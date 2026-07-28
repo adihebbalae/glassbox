@@ -161,6 +161,40 @@ async function killAll(opts = {}) {
   const force = !!opts.force;
   const d = readDaemonFile();
   const daemonPid = d?.pid;
+  // Count BEFORE the graceful shutdown below, not after it. This used to be sampled just above
+  // sweepOrphans(), by which point /shutdown had already closed the browser — so the command
+  // routinely reported "chromium 0 -> 0" on a run that had in fact just taken nine processes down.
+  // Not a false number (nothing was left for the process-level sweep to reap) but a misleading one:
+  // it reads as "there was nothing here", and the whole point of this line is to tell you what you
+  // just killed. m1's stray check counts independently and printed the disagreement for weeks.
+  const before = listGlassboxChromium().length;
+
+  // `--mine` must never reach the machine-wide sweep on someone else's behalf. The ownership guard
+  // below only fires when the daemon is REACHABLE and reports other clients; with a missing or stale
+  // discovery file `d` is null, the /shutdown request is skipped entirely, and control used to fall
+  // straight through to sweepOrphans() — which matches chromium on the chrome-data marker and knows
+  // nothing about owners. So `--mine` went machine-wide in precisely the case where it could not
+  // establish that any of those browsers were the caller's. Same wound as D12: a destroy verb that
+  // respects ownership only on the path where ownership happens to be legible.
+  //
+  // The fix is NOT to make `--mine` inert here. With the daemon already gone, sweeping your own
+  // leaked chromium is the normal end-of-task cleanup, and refusing would leak a browser per task
+  // for the single-agent majority. So ask the question that actually decides it: is any daemon still
+  // alive? If none is, nobody can own anything and the sweep is safe. If an unreferenced one is, it
+  // may be serving another client right now — and `--force` is where machine-wide power already
+  // lives, deliberately.
+  if (mine && !d) {
+    const others = listGlassboxDaemons().filter((pid) => pid !== process.pid && verifyGlassboxPid(pid));
+    if (others.length) {
+      return out(
+        { ok: true, mode: 'mine', destroyed: [], remaining: null, daemonStopped: false, swept: false, orphanDaemons: others, chromiumBefore: before },
+        `refused: no discovery file, but ${others.length} glassbox daemon(s) are still alive (pid ${others.join(', ')}) ` +
+        `and ${before} chromium process(es) are running that this client cannot claim. Sweeping them would be machine-wide, ` +
+        `which is not what --mine means. Use \`kill-all --force\` if you intend the clean slate.`
+      );
+    }
+  }
+
   if (d) {
     let r;
     try {
@@ -174,7 +208,7 @@ async function killAll(opts = {}) {
     // below (which kills chromium machine-wide) must NOT run.
     if (mine && r?.body && r.body.daemonStopping === false) {
       return out(
-        { ok: true, mode: 'mine', client: r.body.client, destroyed: r.body.destroyed, remaining: r.body.remaining, daemonStopped: false },
+        { ok: true, mode: 'mine', client: r.body.client, destroyed: r.body.destroyed, remaining: r.body.remaining, daemonStopped: false, swept: false },
         `destroyed ${r.body.destroyed.length} session(s) owned by '${r.body.client}'${r.body.destroyed.length ? ` [${r.body.destroyed.join(', ')}]` : ''}; ` +
         `${r.body.remaining} session(s) belonging to other clients remain — daemon left running`
       );
@@ -197,7 +231,6 @@ async function killAll(opts = {}) {
     }
   }
   const devOrphans = sweepDevOrphans(); // dev servers whose `glassbox dev` died without cleanup
-  const before = listGlassboxChromium().length;
   sweepOrphans();
   // WAIT for the kill to land rather than sampling once after a fixed 300ms: `taskkill /T /F`
   // returns immediately while the OS spends seconds tearing a browser's eight processes down, so
@@ -216,7 +249,7 @@ async function killAll(opts = {}) {
     /* already gone */
   }
   out(
-    { ok: true, mode: mine ? 'mine' : force ? 'force' : 'all', daemonPid: daemonPid ?? null, daemonStrays, chromiumBefore: before, chromiumAfter: after, devOrphans },
+    { ok: true, mode: mine ? 'mine' : force ? 'force' : 'all', daemonPid: daemonPid ?? null, daemonStrays, swept: true, chromiumBefore: before, chromiumAfter: after, devOrphans },
     `kill-all done${force ? ' (--force, machine-wide)' : ''} — daemon ${daemonPid ?? '(none)'}${daemonStrays.length ? ` (+${daemonStrays.length} stray)` : ''}, chromium ${before} -> ${after}, dev orphans reaped ${devOrphans}`
   );
 }

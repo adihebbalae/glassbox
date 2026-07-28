@@ -19,10 +19,14 @@ import { spawn, execFileSync } from 'node:child_process';
 // platform-specific process reapers are its only consumers.
 //
 // The marker used to be the bare string 'glassbox', on the assumption that the state root always
-// contains it. It does not: point GLASSBOX_HOME anywhere else — which the test suite must, to avoid
-// reaping a developer's real sessions — and the reaper silently matched nothing and reported zero
-// strays forever. So the marker is now the ACTUAL chrome-data path, and the loose string is kept
-// only as a fallback for a process whose cmdline we could not read in full.
+// contains it. It does not: point GLASSBOX_HOME anywhere else and the reaper silently matched
+// nothing and reported zero strays forever. So the marker is now the ACTUAL chrome-data path, and
+// the loose string is kept only as a fallback for a process whose cmdline we could not read in full.
+//
+// This comment used to justify that with "— which the test suite must, to avoid reaping a
+// developer's real sessions —". The suite does not set GLASSBOX_HOME; none of the thirteen tests
+// do. The hardening above is still right, but it was written against a configuration that only
+// existed in this comment. See §11.7 of docs/01-architecture.md, and issue #2.
 export const CHROME_MARKER = 'glassbox';
 
 // ─────────────────────────────────────────────────────────────────────────────

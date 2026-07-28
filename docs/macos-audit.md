@@ -475,6 +475,24 @@ killed while its own children survive — and the function still returns `true`.
 - `platform.mjs:230` — `process.getuid() === 0` → `--no-sandbox`. Correct and rarely triggered on
   macOS. Fine.
 
+### F11. The new `--mine` ownership guard is inert on darwin, and F1 must fix both together  🟡 RISKY
+
+Added 2026-07-28 with the fix in §11.8 of `01-architecture.md`. `kill-all --mine` used to fall
+through to the machine-wide chromium sweep whenever the daemon's discovery file was missing. It now
+refuses when `listGlassboxDaemons()` finds a live daemon that the file does not name.
+
+On darwin that enumeration is part of the inert `/proc` reaper (F1), so it returns `[]` and the guard
+**always permits the sweep**. Today that is harmless for the reason everything on this page is
+harmless — `sweepOrphans()` is equally inert, so nothing gets killed either way. The hazard is
+sequencing: **whoever fixes F1 restores the sweep's teeth and the guard's blindness in the same
+commit**, and darwin gets the exact bug that was just fixed everywhere else, with no test to catch it
+(m12 `b3` would pass on a Mac for the wrong reason — the sweep it is checking for cannot run).
+
+**Fix:** F1 fixes this too, but only if `listGlassboxDaemons()` is included in the darwin
+implementation and m12 `b3` is re-verified on a Mac *after* it lands. Do not treat `b3` green on
+darwin as evidence before then. This is the same failure mode as the twenty "no strays" assertions in
+F1: on a platform where the reaper cannot look, a check about reaping proves nothing.
+
 ---
 
 ## 4. FINE — verified, no action needed
