@@ -8,10 +8,12 @@ are `docs/00-first-principles.md` (why the tool is shaped the way it is) and `do
 
 In order:
 
-1. **Run `npm test` on macOS and report what happens.** macOS is untested. It takes the same POSIX
-   path Linux passes the full suite on, so it probably works — but nobody has run it, and "probably"
-   is not something a verification tool gets to say about itself. A pass report is as useful as a
-   failure report.
+1. **Get macOS working.** Not merely untested — *known broken*. The "POSIX" process reaper reads
+   `/proc`, which macOS does not have, so it is inert there (`docs/macos-audit.md`, issue #1). The
+   fixes need a BSD `ps` implementation behind a third platform branch, and nobody here has a Mac
+   to verify against. Note the failure mode is the one this project exists to prevent: the suite
+   goes *mostly green* on a Mac because ~20 "no strays" assertions pass vacuously against an empty
+   process list. A confirmed-red report is more useful than a green one.
 2. **A UI defect Glassbox misses, as a minimal HTML repro.** This is worth more than a feature.
    See "Bug zoo" below.
 3. **CI.** Wiring the suite into GitHub Actions with a cached Chromium.

@@ -7,6 +7,11 @@
 [![MCP](https://img.shields.io/badge/MCP-14%20tools-8A2BE2.svg)](#mcp-setup-claude-code)
 [![Status](https://img.shields.io/badge/status-v0.1.0-orange.svg)](docs/BUILD-LEDGER.md)
 
+![Terminal recording: one `glassbox verify` call reports the console, network, layout and accessibility defects on a page, then `style` explains a contrast bug from the cascade and `debug listeners` proves a button is dead](assets/demo.gif)
+
+*Real, unedited terminal output. The page under test is `test/bugzoo/layout.html` — the seeded-bug
+site this repo's proofs verify against.*
+
 Your coding agent just edited the checkout page. Now it has to answer, with no human in the
 loop: *does the site actually work and look right?* Today it guesses — or it burns fifteen tool
 calls stitching together a screenshot, a console dump, and a hopeful `networkidle`.
@@ -83,11 +88,18 @@ Full reasoning in `docs/00-first-principles.md` and `docs/01-architecture.md` §
 git clone https://github.com/adihebbalae/glassbox && cd glassbox
 npm install                      # one runtime dep: playwright
 npx playwright install chromium  # the browser binary itself
-npm link                         # optional: puts `glassbox` on your PATH
+npm link                         # optional: puts `glassbox` (and `sibox`) on your PATH
 ```
 
 Node 22+ (the suite runs on 24). Without `npm link`, every example below works as
 `node src/cli.mjs …`.
+
+> **`sibox` is the same command, three letters shorter.** The npm package is `sibox` and both names
+> are installed, so `sibox verify -s checkout` and `glassbox verify -s checkout` are the same call.
+> It is not an arbitrary abbreviation: glass is silicon dioxide, so **Si**-box is the same metaphor
+> at the chemical level — and it is also what the tool does, since the agent gets to **see** into the
+> browser rather than guess at it. Every example in this README uses `glassbox`; type whichever you
+> prefer.
 
 ## 60-second quickstart
 
@@ -154,9 +166,18 @@ overstates itself is worse than useless:
 - **Linux, in an agent sandbox** — proven in M13. The same codebase runs in an ephemeral
   container behind a platform seam, full suite green. The process reaper is two implementations
   behind one dispatch (`taskkill`/WMI on win32, `/proc` on POSIX).
-- **macOS** — *unproven, not unsupported.* It takes the same POSIX path Linux does, so it very
-  likely works, but nobody has run it. If you have a Mac, `npm test` and an issue either way is
-  the single most useful contribution right now.
+- **macOS** — *known broken, and this README used to say otherwise.* It previously claimed macOS
+  "very likely works, since it takes the same POSIX path as Linux." A static audit
+  ([`docs/macos-audit.md`](docs/macos-audit.md)) showed that was false: the POSIX path is a `/proc`
+  reader, and macOS has no `/proc`. The process reaper is inert there — `verifyGlassboxPid()`
+  returns `false` unconditionally, so `kill-all` cannot stop a wedged daemon and then deletes its
+  record anyway, orphaning it. `--headed` silently downgrades to headless. Worse for a tool like
+  this: roughly twenty "no strays" assertions in the suite would pass **vacuously**, so a Mac user
+  sees a mostly-green run whose green means nothing.
+
+  The platform seam is really win32/linux/darwin, not win32/POSIX. Tracked in issue #1; fixes are
+  written but unverifiable without a Mac. If you have one, that's the most useful contribution
+  available right now.
 - **No CI yet.** The suite drives a real Chromium for ~17 minutes; wiring that into Actions is
   the next infrastructure job.
 
@@ -422,6 +443,29 @@ a UA-pseudo hide no computed style can explain.
 Those four rounds are written up in `docs/defects-*.md` — every defect the tool got *wrong* in the
 field, its root cause, and the regression test that now pins the fix. That log is the most useful
 thing in this repo if you are evaluating whether to trust it.
+
+### It diagnosed itself, unprompted, while being filmed
+
+The demo GIF above is a single unedited take, and it is the second take. During the first,
+unrelated Glassbox activity elsewhere on the machine swept the daemon out from under the recording.
+Every subsequent call would have failed. Instead of a bare `NO_SESSION`, the run printed:
+
+```console
+daemon: pid 37380, up since 10:57:14 — a different pid than your session banner means it restarted
+```
+
+Nobody asked it to explain itself. That line is the diagnostic in "My sessions vanished" above,
+firing in the wild against its own author, and it named the exact cause — *a different pid* — rather
+than reporting a missing session and leaving the reader to theorise. **Deterministic, not
+inferred:** it is a pid comparison against the number the session banner printed, so it cannot be
+confidently wrong the way a model's guess about what went wrong can be.
+
+The same incident exposed a real bug, and it belongs in the same paragraph as the win. The swept
+daemon (pid 1264) **survived as an orphan** holding no discovery file — so `daemon status` could not
+see it, `kill-all --mine` could not reap it, and **nothing warned that it was still running.** Only
+`kill-all --force` clears that state, and you have to already suspect it to type that. It is the
+same family as D12 in the defect log: an ownership model that is correct about what it can see and
+silent about what it cannot. Filed, not fixed.
 
 ---
 

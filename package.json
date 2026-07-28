@@ -1,5 +1,5 @@
 {
-  "name": "glassbox",
+  "name": "sibox",
   "version": "0.1.0",
   "description": "Instrumented local browser daemon for agentic UI verification — named parallel sessions, one-call verify bundles, and a white-box debug plane, over both MCP and a CLI",
   "keywords": [
@@ -36,7 +36,8 @@
     "doc": "docs"
   },
   "bin": {
-    "glassbox": "./src/cli.mjs"
+    "glassbox": "./src/cli.mjs",
+    "sibox": "./src/cli.mjs"
   },
   "files": [
     "src/",
