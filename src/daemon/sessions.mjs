@@ -174,11 +174,16 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
       // destroy verb cannot tell "clean up after me" from "take down everyone else too" (D12).
       client: String(opts.client || ANON_CLIENT).slice(0, 64),
       // Headed is the SANDBOX default and headless the local one — deliberately inverted from
-      // every other container browser setup. Measured on an agent container image: headless
-      // Chromium reports a 0px scrollbar (overlay scrollbars), headed-under-Xvfb reports the same
-      // 15px reserved gutter Windows Chrome does. A 0px scrollbar silently hides the whole
-      // `100vw`-overflow and right-edge-clipping bug class, which is precisely what the layout
-      // audit exists to catch. `--headless` (or GLASSBOX_HEADLESS=1) opts back out.
+      // every other container browser setup, because headless measures a 0px scrollbar and so
+      // cannot see the `100vw`-overflow / right-edge-clipping class the layout audit exists to
+      // catch. `--headless` (or GLASSBOX_HEADLESS=1) opts back out.
+      //
+      // The stated cause here used to be "overlay scrollbars" and that was WRONG. It is
+      // `--hide-scrollbars`, which Playwright appends to every headless launch unconditionally
+      // (playwright-core, `if (options.headless)`). Measured 2026-07-28, 800x600: default headless
+      // gutter 0px, headless + `ignoreDefaultArgs: ['--hide-scrollbars']` 15px, headed 15px. So
+      // headless is not blind — our launcher is. See `launchOptions()` in platform.mjs; this whole
+      // headed-by-default seam is standing in for one launch option and should be revisited.
       headed: opts.headless ? false : (opts.headed === undefined ? defaultHeaded() : !!opts.headed),
       seq: 0,
       busy: false,

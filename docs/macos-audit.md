@@ -399,16 +399,31 @@ one measurement:
 > the entire `100vw`-horizontal-overflow and right-edge-clipping bug class, which is exactly what a
 > layout audit exists to catch."*
 
-macOS uses **overlay scrollbars natively**, headed or not — the system default under
-*Settings → Appearance → Show scroll bars* is "Automatically based on mouse or trackpad", which
-gives overlay (0px reserved) on any trackpad Mac. So the 15px gutter that justifies headed mode
-may not exist on macOS **in either mode**.
+> **Correction, 2026-07-28 — the quoted rationale above states the wrong cause.** The 0px headless
+> measurement is not Chromium overlay scrollbars. It is `--hide-scrollbars`, which Playwright
+> appends to *every* headless launch unconditionally (`playwright-core` `coreBundle.js:42539`,
+> `:42744`). Measured on Windows 11, 800×600, a page with a `100vw` child:
+> `headless defaults → 0px`, `headless + ignoreDefaultArgs: ['--hide-scrollbars'] → 15px`,
+> `headed → 15px`. The quotation is preserved as-written because it is what the source files said
+> at audit time; the source files themselves are now corrected. See §11.1 of `01-architecture.md`.
+
+**F7 survives the correction, and gets sharper.** The finding was never really about headless — it
+is about whether *this platform reserves a gutter at all*. macOS uses **overlay scrollbars
+natively**, headed or not: the system default under *Settings → Appearance → Show scroll bars* is
+"Automatically based on mouse or trackpad", which gives overlay (0px reserved) on any trackpad Mac.
+That is a genuinely different mechanism from the Playwright flag, and it is **not fixable by
+removing the flag**. So the 15px gutter may not exist on macOS in *any* configuration.
 
 If confirmed, the `100vw`-overflow and right-edge-clipping bug class — a headline capability — is
 undetectable on a default Mac regardless of flags. That is a *product* limitation on macOS, not a
 crash, and it needs a real measurement (§8.2) before any fix is designed. The honest interim move
 is for the conditions block to state the measured scrollbar width rather than implying the Windows
 gutter.
+
+Note the practical ordering this creates: on Windows and Linux the fix is one launch option; on
+macOS it may require synthesising the gutter (e.g. forcing a classic scrollbar via a CDP
+`Emulation` override or a stylesheet) or accepting a documented `portability` downgrade on that
+finding class. Do not ship a macOS fix that reports 15px without measuring one.
 
 ### F8. Blind process-group kill  🟡 RISKY
 

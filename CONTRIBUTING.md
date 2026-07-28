@@ -38,7 +38,9 @@ npm run test:m3       # or any single milestone
 
 Every proof drives the real CLI and daemon against a real Chromium, and every one ends by
 asserting that `kill-all` leaves zero orphan processes. There are no mocks — a mocked browser
-cannot tell you that headless Chromium reports a 0px scrollbar.
+cannot tell you that a default headless launch reports a 0px scrollbar (and a real one, run against
+a real Chromium, is what eventually told us *why* — Playwright's `--hide-scrollbars`, not the
+renderer; see §11.1 of `docs/01-architecture.md`).
 
 Two consequences worth knowing before you write a test here:
 

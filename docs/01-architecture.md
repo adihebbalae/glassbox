@@ -206,11 +206,28 @@ swap underneath, all decided in `src/platform.mjs` and nowhere else:
 
 ### 11.1 Headed is the sandbox default
 
-Measured, not assumed: headless Chromium reports a scrollbar width of **0px** (overlay scrollbars);
-headed under Xvfb reports **15px**, the same reserved gutter Windows Chrome gives you. A 0px
-scrollbar makes `100vw` horizontal overflow and right-edge clipping *undetectable* — the exact bug
-class the layout audit exists to catch. Headless also leaves `HeadlessChrome` in the UA, which apps
-branch on. Xvfb costs one ~30MB process; the bug class costs more.
+Measured, not assumed: a headless launch reports a scrollbar width of **0px**; headed under Xvfb
+reports **15px**, the same reserved gutter Windows Chrome gives you. A 0px scrollbar makes `100vw`
+horizontal overflow and right-edge clipping *undetectable* — the exact bug class the layout audit
+exists to catch. Headless also leaves `HeadlessChrome` in the UA, which apps branch on. Xvfb costs
+one ~30MB process; the bug class costs more.
+
+**Correction, 2026-07-28 — the parenthetical here used to read "(overlay scrollbars)" and that was
+wrong.** The cause is `--hide-scrollbars`, which Playwright appends to every headless launch
+unconditionally so visual comparisons stay deterministic. Re-measured, 800×600, `100vw` child:
+
+| launch config | gutter | overflow detected |
+| --- | --- | --- |
+| headless, Playwright defaults | 0px | no |
+| headless + `ignoreDefaultArgs: ['--hide-scrollbars']` | 15px | yes |
+| headed | 15px | yes |
+
+So headless is not structurally blind — `launchOptions()` is, by inheriting a flag it never chose,
+and this section attributed a launcher default to the renderer. The measurement was right and the
+mechanism was not, which is the failure mode this codebase files as a **vacuous pass**: the check
+ran against evidence that had already been removed. Removing the flag is the better fix than the
+headed default and is not yet done, because it changes screenshot determinism and needs a full
+suite run.
 
 Fallout worth recording: a headed Chromium exits when its last window closes, and a persistent
 context's default `about:blank` page IS that window. `ensureBrowser` used to close it

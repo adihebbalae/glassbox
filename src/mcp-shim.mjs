@@ -60,7 +60,7 @@ const TOOLS = [
       properties: {
         op: { type: 'string', enum: ['open', 'list', 'close', 'info', 'resize', 'export'], description: 'open a new session | list all | close one | info on one | resize one (needs viewport) | export the latest verify report as one self-contained .html (the sandbox stand-in for gb_watch, which needs a human who can reach this machine)' },
         name: S.string('session name (required for open/close/info/resize); 1-64 chars of [A-Za-z0-9._-]'),
-        headed: S.bool('open a visible window — use for hover/tooltip/GPU-sensitive checks. Default is headless locally and HEADED (under Xvfb) in a container, where a headless browser reports a 0px scrollbar and therefore cannot see horizontal overflow at all'),
+        headed: S.bool('open a visible window — use for hover/tooltip/GPU-sensitive checks. Default is headless locally and HEADED (under Xvfb) in a container, where a headless browser measures a 0px scrollbar and therefore cannot see horizontal overflow at all'),
         headless: S.bool('force headless even where headed is the default'),
         har: S.string('replay a HAR recording instead of hitting the network — the fidelity bridge for a sandbox whose egress is jailed. Carries the real API responses AND the real font files, so text-metric findings stop being about a substitute typeface'),
         harNotFound: { type: 'string', enum: ['fallback', 'abort'], description: "unmatched requests: 'fallback' (default) goes to the real network, 'abort' makes any unrecorded request a finding" },

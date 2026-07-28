@@ -644,9 +644,10 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--json') JSON_MODE = true;
     else if (a === '--headed') opts.headed = true;
-    // Headed is the SANDBOX default: a headless container reports a 0px overlay scrollbar and so
-    // cannot see horizontal overflow at all, while headed-under-Xvfb reports the same 15px gutter
-    // Windows Chrome does. --headless is the opt-out.
+    // Headed is the SANDBOX default: a headless container measures a 0px scrollbar and so cannot
+    // see horizontal overflow at all, while headed-under-Xvfb reports the same 15px gutter Windows
+    // Chrome does. --headless is the opt-out. (Cause is Playwright's `--hide-scrollbars` headless
+    // default, not overlay scrollbars — see the correction in platform.mjs.)
     else if (a === '--headless') opts.headless = true;
     else if (a === '--all') opts.all = true;
     else if (a === '--submit') opts.submit = true;

@@ -320,9 +320,23 @@ playwright pins a browser revision per release — so a container that ships a *
 fails channel resolution. Glassbox resolves a Chromium by path instead, or finds one under
 `PLAYWRIGHT_BROWSERS_PATH`.
 
-Headed is the sandbox default because it is *more accurate*, not less: headless Chromium reports a
-0px overlay scrollbar and therefore cannot see horizontal overflow or right-edge clipping at all,
-while headed-under-Xvfb reports the same 15px gutter a desktop Chrome does.
+Headed is the sandbox default because it is *more accurate*, not less: a headless launch measures a
+0px scrollbar and therefore cannot see horizontal overflow or right-edge clipping at all, while
+headed-under-Xvfb reports the same 15px gutter a desktop Chrome does.
+
+> **Correction, 2026-07-28.** This used to say the cause was Chromium's overlay scrollbars. It is
+> not. Playwright appends `--hide-scrollbars` to every headless launch unconditionally, so that
+> visual comparisons stay deterministic — a sound default for screenshot testing, a destructive one
+> for layout verification. Measured, 800×600, page with a `100vw` child: default headless gutter
+> **0px** (overflow undetected), headless with `ignoreDefaultArgs: ['--hide-scrollbars']` **15px**
+> (detected), headed **15px** (detected). Headless is not blind; this launcher was, by inheriting a
+> flag it never chose. Anything built on Playwright headless inherits it too.
+>
+> Left standing for now because removing the flag changes screenshot determinism, which the
+> golden-image checks depend on — it needs a full suite run first. It is the honest example of the
+> line four paragraphs down: *a finding without its conditions is a claim the instrument cannot
+> support.* This tool made that exact mistake, on its own headline finding, and the check that
+> should have caught it passed against evidence that had already been deleted.
 
 Every verify carries a `conditions` block and every finding a `portability` tag — `portable`
 (computed from CSS values, the cascade, the DOM, HTTP status), `font-dependent` (measured off

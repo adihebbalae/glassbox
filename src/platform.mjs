@@ -156,11 +156,27 @@ export function chromiumPath() {
 /**
  * Headed is the sandbox DEFAULT, which is the opposite of every other container browser setup.
  *
- * Measured on this image: headless Chromium reports a scrollbar width of 0px (overlay scrollbars),
- * headed-under-Xvfb reports 15px — the same reserved gutter Windows Chrome gives you. A 0px
- * scrollbar silently hides the entire `100vw`-horizontal-overflow and right-edge-clipping bug
- * class, which is exactly what a layout audit exists to catch. Headless also leaves
- * "HeadlessChrome" in the UA, which some apps branch on.
+ * Measured on this image: headless reports a scrollbar width of 0px, headed-under-Xvfb reports
+ * 15px — the same reserved gutter Windows Chrome gives you. A 0px scrollbar silently hides the
+ * entire `100vw`-horizontal-overflow and right-edge-clipping bug class, which is exactly what a
+ * layout audit exists to catch. Headless also leaves "HeadlessChrome" in the UA, which some apps
+ * branch on.
+ *
+ * CORRECTION (2026-07-28): the cause is NOT overlay scrollbars, as this comment claimed for
+ * months. Playwright appends `--hide-scrollbars` to every headless launch unconditionally
+ * (playwright-core, `if (options.headless)`) so that visual comparisons are deterministic — a
+ * sound default for screenshot testing and a destructive one for layout verification. Measured,
+ * 800x600, page with a 100vw child:
+ *
+ *   headless, playwright defaults                  gutter  0px   overflow detected: no
+ *   headless + ignoreDefaultArgs hide-scrollbars    gutter 15px   overflow detected: yes
+ *   headed                                         gutter 15px   overflow detected: yes
+ *
+ * So headless is not structurally blind; `launchOptions()` below is, by inheriting a flag it never
+ * chose. The fix is `ignoreDefaultArgs: ['--hide-scrollbars']` there, which would make headless as
+ * accurate as headed for this class and reduce this whole seam to a UA and GPU concern. NOT done
+ * yet: it changes screenshot determinism, which the golden-image checks depend on, so it needs a
+ * full suite run before it lands.
  *
  * Xvfb costs one ~30MB process. The bug class costs more than that.
  */
