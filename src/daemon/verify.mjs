@@ -13,6 +13,8 @@ import { settle } from './settle.mjs';
 import { layoutAuditSource } from './layout-audit.mjs';
 import { readOverlay } from './overlay-reader.mjs';
 import { sourceMapper } from './sourcemaps.mjs';
+import { splitEgress, egressFinding } from './egress.mjs';
+import { blockedFontEvidence } from './stubs.mjs';
 
 const DEFAULT_VIEWPORTS = [{ w: 390, h: 844, label: 'mobile' }, { w: 1280, h: 800, label: 'desktop' }];
 const LAYOUT_CATS = ['overflow', 'occlusion', 'invisible', 'zeroSize', 'brokenImages', 'contrast', 'cls'];
@@ -156,7 +158,32 @@ function netFinding(kind, list, severity) {
 }
 function layoutFinding(f, combo) {
   const label = { overflow: 'Horizontal overflow', occlusion: 'Occluded interactive element', invisible: 'Invisible interactive element', zeroSize: 'Zero-size click target', brokenImage: 'Broken image', contrast: 'Low text contrast', cls: 'Layout shift (CLS)' }[f.type] || f.type;
-  return { channel: 'layout', severity: 'warn', summary: `${label}: ${f.desc}${combo ? ` [${combo}]` : ''} — ${f.detail}`, selector: f.desc, ...(combo ? { combo } : {}) };
+  // `type` is carried through so the portability tagger can tell a text-metric measurement from a
+  // computed-value one; the two do not survive a change of environment equally.
+  return { channel: 'layout', severity: 'warn', type: f.type, summary: `${label}: ${f.desc}${combo ? ` [${combo}]` : ''} — ${f.detail}`, selector: f.desc, ...(combo ? { combo } : {}) };
+}
+
+// ---- portability: does this finding survive the environment it was measured in? ---------------
+//
+// The honest partition, from measurements on an agent container image. Some checks are computed
+// from values the browser was GIVEN (CSS colours, the cascade, the DOM, HTTP status) and mean the
+// same thing anywhere. Others are measured off RENDERED TEXT — where the line wrapped, what
+// overlapped what, how much the layout shifted — and a container with no web fonts and no Segoe UI
+// renders text at different widths than the developer's machine, so those findings are about a
+// page that exists nowhere else.
+//
+// Neither kind is dropped. They are LABELLED, because a reader who knows which is which can act on
+// both, and a reader told nothing will trust the wrong half.
+const FONT_DEPENDENT = new Set(['overflow', 'occlusion', 'zeroSize', 'cls', 'invisible']);
+
+function tagPortability(findings, cond) {
+  const fontsAreReal = !cond || cond.fonts !== 'substituted';
+  for (const f of findings) {
+    if (f.portability) continue;                       // egress finding tags itself
+    if (f.channel === 'layout' && FONT_DEPENDENT.has(f.type) && !fontsAreReal) f.portability = 'font-dependent';
+    else f.portability = 'portable';
+  }
+  return findings;
 }
 
 // ---- load state: cold vs warm (defect W3) -----------------------------------
@@ -273,13 +300,28 @@ export async function verify(session, opts = {}) {
     }
     net.httpError = keep;
   }
+
+  // The fifth bucket. Under a jailed egress policy, a failed request to an external origin is the
+  // sandbox's doing, not the code's — see egress.mjs for why that has to be split out rather than
+  // reported as a defect. Same contract as the 404 allowlist: demoted, never deleted, and only
+  // when the evidence actually says "proxy refused".
+  const { sandboxBlocked } = splitEgress(net, session.egressCtxFn ? session.egressCtxFn() : { policy: 'open' });
+
   // The browser also logs a console error for each of those 404s ("Failed to load resource: …404"),
   // located AT the resource URL. Demote exactly those — matched by URL against the rows we just
   // demoted, so a 500 on the same path keeps its console error.
+  // A blocked external request produces the same paired console error ("Failed to load resource:
+  // net::ERR_TUNNEL_CONNECTION_FAILED"), so it gets the same treatment — but into its OWN bucket,
+  // because `ignored404` counts an allowlist the caller wrote and `blockedConsole` counts an
+  // environment they did not choose. Collapsing the two would mislabel the report.
   const ignoredUrls = new Set(ignored404.map((r) => r.url));
-  const consoleErrs = [], ignoredConsole = [];
+  const blockedUrls = new Set(sandboxBlocked.map((r) => r.url));
+  const consoleErrs = [], ignoredConsole = [], blockedConsole = [];
   for (const e of allConsoleErrs) {
-    const isResourceErr = /failed to load resource/i.test(e.text || '') && [...ignoredUrls].some((u) => (e.loc || '').startsWith(u));
+    const isResource = /failed to load resource/i.test(e.text || '');
+    const at = (u) => (e.loc || '').startsWith(u);
+    if (isResource && [...blockedUrls].some(at)) { blockedConsole.push(e); continue; }
+    const isResourceErr = isResource && [...ignoredUrls].some(at);
     if (isResourceErr) ignoredConsole.push(e); else consoleErrs.push(e);
   }
 
@@ -393,6 +435,10 @@ export async function verify(session, opts = {}) {
   }
   for (const g of axeGroups) findings.push({ channel: 'a11y', severity: g.impact === 'critical' || g.impact === 'serious' ? 'warn' : 'info', summary: `${g.help} (${g.count}×): ${g.sample}`, selector: g.sample, detail: `rule ${g.ruleId} (${g.impact})` });
 
+  // Sandbox egress: one collapsed info line naming the hosts, never a per-request flood.
+  const egressInfo = egressFinding(sandboxBlocked);
+  if (egressInfo) findings.push(egressInfo);
+
   // The load-state caveat goes LAST among the warns (stable sort): it qualifies the whole report
   // rather than naming a defect, but it must be impossible to miss (defect W3c).
   const navigation = navState(session, coldRun);
@@ -401,6 +447,34 @@ export async function verify(session, opts = {}) {
       channel: 'navigation', severity: 'warn',
       summary: `Measured after a WARM load (${navigation.reason}) — first-load CLS and first-request failures may be understated`,
       detail: 'CLS is a first-paint race a warm load wins, and a negatively-cached 404 (e.g. /favicon.ico) is never re-requested. Re-run with cold:true (--cold), or measure in a fresh session, before believing a clean result.',
+    });
+  }
+
+  // ---- conditions: what this measurement was taken under -----------------------------------
+  // The W3 lesson generalised. A warm load quietly loses first-load findings, so every report says
+  // cold-or-warm. The same argument applies with more force to the environment itself: a run with
+  // substituted fonts, no outbound network and a software rasterizer can produce a clean report
+  // about a page the developer would not recognise. State it, every time, in the report and in the
+  // compact result — not in documentation the reader has to remember.
+  // Font evidence: requests the jail actually ate that a typeface depended on, plus any FontFace
+  // the browser itself reports as failed. Asserting "fonts were substituted" without this would
+  // fire on every page in a container, including the many that ship no web fonts at all.
+  let failedFaces = 0;
+  try {
+    failedFaces = await page.evaluate('(()=>{try{let n=0;document.fonts.forEach(f=>{if(f.status==="error")n++});return n}catch{return 0}})()');
+  } catch { /* a paused or navigating page owes us nothing here */ }
+  const fontEvidence = blockedFontEvidence(sandboxBlocked) + (Number(failedFaces) || 0);
+  const conditions = { ...(session.conditionsFn ? session.conditionsFn({ fontEvidence }) : {}), load: null };
+
+  if (conditions.fonts === 'substituted') {
+    const fontDependent = findings.filter((f) => f.channel === 'layout' && FONT_DEPENDENT.has(f.type)).length;
+    findings.push({
+      channel: 'navigation', severity: fontDependent ? 'warn' : 'info',
+      portability: 'sandbox-artifact',
+      summary: fontDependent
+        ? `Web fonts did not load (sandbox egress) — ${fontDependent} text-metric finding${fontDependent > 1 ? 's are' : ' is'} measured against a substitute typeface`
+        : 'Web fonts did not load (sandbox egress) — text is rendered in a substitute typeface',
+      detail: 'Overflow, occlusion, clipping and CLS are measured off rendered text width. This container has Liberation and DejaVu but no Segoe UI, Inter or Roboto, so `system-ui` and any webfont resolve to a face the developer never sees. Findings tagged `font-dependent` are about THIS render, not theirs. Record a HAR on a networked machine (--record-har) and replay it here (--har) to make them real.',
     });
   }
 
@@ -416,6 +490,9 @@ export async function verify(session, opts = {}) {
     netFailed: net.failed.length, netHttpError: net.httpError.length, netHanging: net.hanging.length, netMixed: net.mixedContent.length,
     a11y: axeGroups.length, layout: layoutCount,
     ...(ignored404.length || ignoredConsole.length ? { ignored404: ignored404.length + ignoredConsole.length } : {}),
+    // Counted so it is visible, kept OUT of ok so it can never fail a build for an environment the
+    // developer did not choose.
+    ...(sandboxBlocked.length || blockedConsole.length ? { sandboxBlocked: sandboxBlocked.length + blockedConsole.length } : {}),
     ...(baseLayout?.deferred?.length ? { deferred: baseLayout.deferred.reduce((n2, g) => n2 + g.count, 0) } : {}),
     ...(baseLayout?.collapsed?.length ? { collapsed: baseLayout.collapsed.reduce((n2, g) => n2 + g.count, 0) } : {}),
   };
@@ -430,12 +507,14 @@ export async function verify(session, opts = {}) {
   let axePath;
   if (wantAxe) { axePath = session.journal.alloc('reports', `axe-${n}.json`); try { fs.writeFileSync(axePath, JSON.stringify(axeRaw)); } catch { /* disk */ } }
   const reportPath = session.journal.alloc('reports', `verify-${n}.json`);
+  conditions.load = navigation.kind;
+  tagPortability(findings, conditions);
   const full = {
-    ok, settled: settleRes.settled, settleWhy: settleRes.why, url: page.url(), navigation, counts,
+    ok, settled: settleRes.settled, settleWhy: settleRes.why, url: page.url(), navigation, conditions, counts,
     findings, // uncapped on disk
     // Demoted rows are DEMOTED, never dropped: an allowlist that deletes evidence is a liability.
-    errors: { console: consoleErrs, page: pageErrs, ...(ignoredConsole.length ? { ignored: ignoredConsole } : {}) },
-    network: { ...net, ...(ignored404.length ? { ignored404 } : {}) },
+    errors: { console: consoleErrs, page: pageErrs, ...(ignoredConsole.length ? { ignored: ignoredConsole } : {}), ...(blockedConsole.length ? { sandboxBlocked: blockedConsole } : {}) },
+    network: { ...net, ...(ignored404.length ? { ignored404 } : {}), ...(sandboxBlocked.length ? { sandboxBlocked } : {}) },
     layout: baseLayout, sweep: comboFindings, theme: themeFindings,
     modal: baseLayout?.modal || null, deferred: baseLayout?.deferred || [], collapsed: baseLayout?.collapsed || [],
     overlay, a11y: axeGroups,
@@ -447,7 +526,7 @@ export async function verify(session, opts = {}) {
   session.journal.log('command', { op: 'verify', ok, counts, navigation: navigation.kind, report: reportPath });
 
   return {
-    ok, settled: settleRes.settled, url: page.url(), navigation, counts,
+    ok, settled: settleRes.settled, url: page.url(), navigation, conditions, counts,
     findings: findings.slice(0, 20),
     artifacts: { report: reportPath, screenshots: shots, ...(axePath ? { axe: axePath } : {}), netlog: netlogPath },
     tookMs: Date.now() - t0,

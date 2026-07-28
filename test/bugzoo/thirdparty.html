@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>third-party</title>
+<!-- TP_BASE is rewritten by the test harness; a bare relative URL would defeat the point. -->
+<link rel="stylesheet" href="TP_BASE/css">
+<style>body{font-family:Recorded,serif;margin:0}main{padding:12px}</style>
+</head><body><main>
+<h1 class="tp">third-party page</h1>
+<p id="out">loading…</p>
+</main>
+<script>
+fetch('TP_BASE/api').then(r=>r.json())
+  .then(d=>{document.getElementById('out').textContent='items:'+d.items.length;document.title='items:'+d.items.length})
+  .catch(e=>{document.getElementById('out').textContent='api dead';console.error('API DEAD: '+e.message)});
+</script>
+</body></html>

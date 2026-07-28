@@ -10,8 +10,10 @@ It is **not** a general web agent, a scraper, or a test runner. It verifies the 
 on localhost, right now.
 
 Status: **v0.1.0**, first complete build. Windows-first (developed and proven on Windows 11 / Node
-24); the code is plain ESM with no win32-only APIs outside the process reaper, but only Windows is
-tested.
+24), and since M13 also **sandbox-capable**: the same codebase runs inside an ephemeral Linux agent
+container behind a platform seam, with the full suite (13 modules, 293 checks) green on both. The
+process reaper is now two implementations behind one dispatch — `taskkill`/WMI on win32, `/proc` on
+POSIX — rather than a win32-only file that silently answered "nothing found" everywhere else.
 
 ---
 
@@ -47,6 +49,20 @@ npx playwright install chromium  # the browser binary itself
 
 Node 24 (Node 22+ should work; 24 is what the suite runs on). Optional: `npm link` to put
 `glassbox` on your PATH — every example below otherwise works as `node src/cli.mjs …`.
+
+### In a container
+
+`npx playwright install` needs network an agent sandbox's allowlist usually does not permit, and
+playwright pins a browser revision per release — so a container that ships a *different* revision
+fails channel resolution. Glassbox resolves a Chromium by path instead. Point it at one, or let it
+find one under `PLAYWRIGHT_BROWSERS_PATH`:
+
+```bash
+glassbox doctor        # browser, display mode, egress, state root — all probed, none guessed
+```
+
+`doctor` is the first thing to run anywhere new. See §"Sandbox" below and `docs/01-architecture.md`
+§11 for what changes and why.
 
 ---
 
@@ -313,3 +329,49 @@ no computed style can explain).
 No cloud/remote browsers, no stealth or CAPTCHA anything, no cross-engine (BiDi) abstraction, no
 performance-trace UI, no scraping ergonomics. React/Vue component-tree inspection is deliberately
 out (version-fragile). macOS/Linux are unproven, not unsupported.
+
+---
+
+## Sandbox
+
+The same instrument, in an ephemeral Linux container where an agent writes the code and checks it.
+`docs/01-architecture.md` §11 is the decision record; the short version:
+
+| | local | sandbox |
+| --- | --- | --- |
+| browser | `channel:'chromium'` | resolved by path, `--disable-dev-shm-usage` |
+| default mode | headless | **headed under Xvfb** |
+| egress | open | jailed — measured at daemon start, not assumed |
+| failed external request | a defect | `sandboxBlocked`: one info line, excluded from `ok` |
+| fonts | system | `substituted` (on evidence) or `har-replayed` |
+| human channel | `watch` — live screencast | `export` — one self-contained `.html` |
+| cleanup | `kill-all --mine` protects other agents | single-tenant; `--force` is normal |
+
+Headed is the sandbox default because it is *more accurate*, not less: headless Chromium reports a
+0px overlay scrollbar and therefore cannot see horizontal overflow or right-edge clipping at all,
+while headed-under-Xvfb reports the same 15px gutter a desktop Chrome does.
+
+Every verify carries a `conditions` block and every finding a `portability` tag — `portable`
+(computed from CSS values, the cascade, the DOM, HTTP status), `font-dependent` (measured off
+rendered text, with a substitute typeface), or `sandbox-artifact`. A finding without its conditions
+is a claim the instrument cannot support.
+
+**The HAR bridge** is what connects the two halves. Record where the network works, replay where it
+does not — one file carries the API responses and the font binaries:
+
+```bash
+# networked machine
+glassbox session open rec --record-har run.har
+glassbox goto http://localhost:5173/ -s rec
+glassbox wait -s rec --sleep 1500
+glassbox session close rec          # playwright writes the HAR on CLOSE
+
+# sandbox
+glassbox session open s --har run.har
+glassbox verify -s s                # conditions: fonts: har-replayed
+glassbox export -s s --out report.html
+```
+
+M13 proves the round trip, including the part that matters most: **the HAR run sees a low-contrast
+defect the jailed run could not see at all**, because the stylesheet carrying it never loaded. The
+bridge restores findings; it does not just remove noise.

@@ -7,7 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "node test/m1.mjs && node test/m2.mjs && node test/m3.mjs && node test/m4.mjs && node test/m5.mjs && node test/m6.mjs && node test/m7.mjs && node test/m8.mjs && node test/m9.mjs && node test/m10.mjs && node test/m11.mjs && node test/m12.mjs",
+    "test": "node test/m1.mjs && node test/m2.mjs && node test/m3.mjs && node test/m4.mjs && node test/m5.mjs && node test/m6.mjs && node test/m7.mjs && node test/m8.mjs && node test/m9.mjs && node test/m10.mjs && node test/m11.mjs && node test/m12.mjs && node test/m13.mjs",
     "test:m1": "node test/m1.mjs",
     "test:m2": "node test/m2.mjs",
     "test:m3": "node test/m3.mjs",
@@ -20,6 +20,7 @@
     "test:m10": "node test/m10.mjs",
     "test:m11": "node test/m11.mjs",
     "test:m12": "node test/m12.mjs",
+    "test:m13": "node test/m13.mjs",
     "test:live": "node test/live-wcii.mjs"
   },
   "keywords": [],

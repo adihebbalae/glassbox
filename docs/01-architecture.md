@@ -185,3 +185,122 @@ file paths, always.
 Cloud/remote browsers; stealth/CAPTCHA anything; cross-engine (BiDi) abstraction; perf-trace
 UI (chrome-devtools-mcp does it; wrap later); Electron shell; scraping ergonomics. WebMCP
 (Chrome 149 origin trial) is a watch-item only.
+
+## 11. The platform seam (2026-07-28)
+
+Glassbox runs in two places now: a developer's own machine, and an ephemeral Linux container where
+an agent both writes the code and checks it. **One codebase, two backends** — the verb surface, the
+finding engine, the noise discipline and the report shape are shared and untouched. Four members
+swap underneath, all decided in `src/platform.mjs` and nowhere else:
+
+1. **Launcher.** Local: `channel:'chromium'`, headless default. Sandbox: a Chromium resolved by
+   PATH (playwright pins a browser revision per release; an image shipping a different one fails
+   channel resolution, and `playwright install` cannot fetch through a package-registry-only egress
+   allowlist), **headed under Xvfb by default**, `--disable-dev-shm-usage`, timezone and locale
+   pinned rather than inherited.
+2. **Network policy.** Local: passthrough. Sandbox: a fifth taxonomy bucket plus HAR replay.
+3. **Human channel.** Local: the live `watch` screencast. Sandbox: an exported self-contained HTML
+   report, because nobody can reach that box's loopback.
+4. **Lifecycle.** Same daemon both sides; ownership machinery is a no-op in a single-tenant
+   container, and the process reaper gets a real POSIX implementation.
+
+### 11.1 Headed is the sandbox default
+
+Measured, not assumed: headless Chromium reports a scrollbar width of **0px** (overlay scrollbars);
+headed under Xvfb reports **15px**, the same reserved gutter Windows Chrome gives you. A 0px
+scrollbar makes `100vw` horizontal overflow and right-edge clipping *undetectable* — the exact bug
+class the layout audit exists to catch. Headless also leaves `HeadlessChrome` in the UA, which apps
+branch on. Xvfb costs one ~30MB process; the bug class costs more.
+
+Fallout worth recording: a headed Chromium exits when its last window closes, and a persistent
+context's default `about:blank` page IS that window. `ensureBrowser` used to close it
+unconditionally; in headed mode that took the browser with it and the next `newContext` failed with
+"Target page, context or browser has been closed". Headless has no window to lose, which is why it
+never surfaced before.
+
+### 11.2 Egress is measured, and gets its own bucket
+
+An agent sandbox routes outbound traffic through an allowlisting proxy: package registries pass,
+everything else gets 403. Verified on the reference image for curl, Node, Playwright's request
+context and in-page `fetch`, with and without an explicit `--proxy-server`. Two consequences that
+are *not* the caller's code:
+
+- **Tunnels and preview deployments are structurally dead.** Both need the container to fetch a
+  public URL. The app under test must run in the sandbox; there is no second option to design for.
+- **The four-bucket taxonomy inverts.** Run a normal app in that jail and every font, CDN script
+  and API call lands in `failed`, so verify reports a wall of red that says nothing about the code —
+  and real failures disappear inside the noise.
+
+So: `sandboxBlocked`, a fifth bucket, filled only on evidence (proxy-refusal errorText, or 403/407)
+and never for a same-origin or loopback request — *a broken local API can never be excused as "the
+sandbox did it"*. Blocked rows are demoted, never deleted (the contract `ignore404` already keeps),
+collapse to one info line naming the hosts, and are excluded from `ok`. The daemon **probes** egress
+at startup against a canary rather than inferring it from environment variables; the report states
+what the probe found.
+
+### 11.3 Conditions, and per-finding portability
+
+The W3 lesson (a warm load quietly loses first-load findings, so every report says which it
+measured) generalises to the environment itself. Every verify now carries a `conditions` block —
+platform, display mode, browser, raster, egress, fonts, viewport, colour scheme, timezone, load —
+and every finding carries a `portability` tag:
+
+- `portable` — computed from values the browser was *given*: CSS colours and contrast, the cascade,
+  the DOM, HTTP status, coverage, hit-test occlusion. Means the same thing on any machine.
+- `font-dependent` — measured off *rendered text*: overflow, occlusion, clipping, CLS. This image
+  has Liberation and DejaVu and no Segoe UI, Inter or Roboto, so `system-ui` resolves to a face the
+  developer never sees. Tagged only when fonts really were substituted.
+- `sandbox-artifact` — a fact about the environment, not the code.
+
+`fonts: substituted` is asserted on **evidence** (blocked font/stylesheet requests, plus FontFaces
+the browser reports as failed), never on the mere fact of being in a container. A page that ships no
+web fonts loses nothing to a jailed network, and warning it anyway is the same sin as a false
+all-clear pointed the other way.
+
+### 11.4 The HAR bridge
+
+The load-bearing piece, and the only thing that makes the two Glassboxes one system:
+
+```
+networked machine:  glassbox session open s --record-har run.har  …  glassbox session close s
+sandbox:            glassbox session open s --har run.har
+```
+
+One artifact fixes three things at once — egress (the requests resolve), fonts (a HAR embeds the
+font payloads, so text metrics become real and `font-dependent` findings become portable), and
+determinism (same bytes every run). M13 proves it end to end, and proves the part that matters
+most: the HAR run **sees a low-contrast defect the jailed run could not see at all**, because the
+stylesheet that carried it never loaded. The bridge does not merely silence noise; it restores
+findings.
+
+Recording gotchas, both learned the hard way: playwright writes the HAR on **context close**, so a
+recording session must be closed cleanly and settled first (an in-flight request records as status
+-1 with no body); and **cross-origin fonts are CORS-restricted**, so a third-party font with no
+`Access-Control-Allow-Origin` silently never loads and never records.
+
+### 11.5 Lifecycle: what a reaper must never do
+
+`prockit.mjs` is now platform dispatch over `prockit-win32.mjs` and a new `prockit-posix.mjs`
+(`/proc`, no subprocesses, works in a stripped image with no procps). Three corrections fell out,
+all of the same shape — *a check that cannot look must not report "clean"*:
+
+- Every one of these functions shelled out to `powershell.exe`, so on Linux they returned `[]`. The
+  suite's opening `0 precondition clean` and closing `zero strays` checks therefore **passed
+  vacuously** while browsers leaked between tests. They now report real counts (18 → 0).
+- The stray marker was the bare string `'glassbox'`, on the assumption the state root contains it.
+  Point `GLASSBOX_HOME` elsewhere — which the suite must, so a run never reaps a developer's live
+  sessions — and the reaper matched nothing forever. It now matches the actual `chrome-data` path,
+  and daemons match the resolved daemon entry rather than a directory name.
+- **A zombie is not alive.** `process.kill(pid,0)` succeeds on a zombie, so a killed child reads as
+  running; in a container whose PID 1 does not reap, every "is the tree down?" loop spins to its
+  timeout and reports a leak that does not exist. `processAlive` now reads the state field.
+
+`dev`'s POSIX tree kill was a bare `kill(-pid)`; a `shell:true` grandchild can escape the group, so
+it now goes through the same `/proc` walk.
+
+### 11.6 State root
+
+`LOCALAPPDATA || TEMP || '.'` ended in a **relative** path, so the CLI, a daemon spawned with a
+different cwd, and the test runner could each compute a different root and then disagree about
+where `daemon.json` lives — a discovery file nobody can find is indistinguishable from a dead
+daemon. The root is now always absolute: `GLASSBOX_HOME` > platform default > tmp.

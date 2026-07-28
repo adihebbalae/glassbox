@@ -58,9 +58,17 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['open', 'list', 'close', 'info', 'resize'], description: 'open a new session | list all | close one | info on one | resize one (needs viewport)' },
+        op: { type: 'string', enum: ['open', 'list', 'close', 'info', 'resize', 'export'], description: 'open a new session | list all | close one | info on one | resize one (needs viewport) | export the latest verify report as one self-contained .html (the sandbox stand-in for gb_watch, which needs a human who can reach this machine)' },
         name: S.string('session name (required for open/close/info/resize); 1-64 chars of [A-Za-z0-9._-]'),
-        headed: S.bool('open a visible window (default false/headless) — use for hover/tooltip/GPU-sensitive checks'),
+        headed: S.bool('open a visible window — use for hover/tooltip/GPU-sensitive checks. Default is headless locally and HEADED (under Xvfb) in a container, where a headless browser reports a 0px scrollbar and therefore cannot see horizontal overflow at all'),
+        headless: S.bool('force headless even where headed is the default'),
+        har: S.string('replay a HAR recording instead of hitting the network — the fidelity bridge for a sandbox whose egress is jailed. Carries the real API responses AND the real font files, so text-metric findings stop being about a substitute typeface'),
+        harNotFound: { type: 'string', enum: ['fallback', 'abort'], description: "unmatched requests: 'fallback' (default) goes to the real network, 'abort' makes any unrecorded request a finding" },
+        harUrl: S.string('glob limiting which URLs are served from the HAR (default: all)'),
+        recordHar: S.string('RECORD a HAR to this path — run this on a machine with real network, then close the session to write the file'),
+        timezone: S.string("IANA timezone (a container inherits UTC; the sandbox pins America/Los_Angeles unless told otherwise)"),
+        locale: S.string('BCP-47 locale (a container inherits none)'),
+        out: S.string('op:export only — where to write the .html (default: beside the report)'),
         viewport: { type: 'object', description: '{width,height} in CSS px (op:open initial size, or op:resize target size)', properties: { width: S.int(''), height: S.int('') } },
         colorScheme: { type: 'string', enum: ['light', 'dark'], description: 'initial prefers-color-scheme' },
         themeAttr: S.string("the site's own theme ATTRIBUTE on <html> (e.g. 'data-theme') so verify can sweep it alongside emulateMedia"),
@@ -236,9 +244,14 @@ function planCall(tool, a) {
       if (op === 'open') {
         if (!a.name) throw { gb: { code: 'BAD_REQUEST', message: 'gb_session open needs a `name`', field: 'name' } };
         const body = { name: a.name };
-        for (const k of ['headed', 'viewport', 'colorScheme', 'themeAttr', 'themeClass', 'ignore404', 'baseUrl']) if (a[k] != null) body[k] = a[k];
+        for (const k of ['headed', 'headless', 'viewport', 'colorScheme', 'themeAttr', 'themeClass', 'ignore404', 'baseUrl',
+          // sandbox backend: the HAR bridge + explicit environment pinning
+          'har', 'harNotFound', 'harUrl', 'recordHar', 'timezone', 'locale']) if (a[k] != null) body[k] = a[k];
         return { method: 'POST', route: '/sessions', body };
       }
+      // Sandbox human channel. Rides inside gb_session for the same reason resize does: the
+      // 14-tool ceiling is a hard contract (research 04).
+      if (op === 'export') return { method: 'POST', route: `/sessions/${enc(needName(a))}/export`, body: a.out ? { out: a.out } : {} };
       if (op === 'list') return { method: 'GET', route: '/sessions' };
       if (op === 'info') return { method: 'GET', route: `/sessions/${enc(needName(a))}` };
       if (op === 'close') return { method: 'DELETE', route: `/sessions/${enc(needName(a))}` };

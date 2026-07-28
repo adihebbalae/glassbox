@@ -12,6 +12,8 @@ import {
 import {
   verifyGlassboxPid, processAlive, taskkillTree, listGlassboxChromium, listGlassboxDaemons, sweepOrphans,
 } from './daemon/prockit.mjs';
+import { exportReport, latestReport } from './report-html.mjs';
+import { KIND, KIND_REASONS, chromiumPath, defaultHeaded, ensureDisplay, probeEgress, HUMAN_CHANNEL } from './platform.mjs';
 import { runDev, sweepDevOrphans } from './dev.mjs';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -518,6 +520,60 @@ async function runVerb(verb, pos, opts) {
   printResult(verb, resp);
 }
 
+// `export` is CLI-local on purpose: it reads an on-disk report, so it needs no daemon, no browser
+// and no session still alive. You can export yesterday's run.
+async function runExport(pos, opts) {
+  const name = opts.session || pos[0];
+  if (!name) fail({ code: 'BAD_REQUEST', message: 'export needs a session: glassbox export -s <session> [--out file.html]', field: 'session' });
+  const rp = latestReport(PATHS.sessions, name);
+  if (!rp) fail({ code: 'NO_SESSION', message: `no verify report on disk for session '${name}'`, correction_hint: 'run `glassbox verify -s ' + name + '` first — export reads the report it writes' });
+  const res = exportReport(rp, { out: opts.out ? unmangleMsysPath(opts.out) : null });
+  out({ ...res, from: rp }, `exported ${res.findings} finding(s) → ${res.path}  (${Math.round(res.bytes / 1024)}kb, self-contained)`);
+}
+
+/**
+ * `doctor` — what this machine will and will not let glassbox measure, before you build anything on
+ * top of it. Every line is a MEASUREMENT, not a guess: it finds the browser, brings up a display if
+ * one is needed, and probes egress for real. In a container the answers change what a report means,
+ * so the report states them; doctor is the same information ahead of time.
+ */
+async function runDoctor() {
+  const chrome = chromiumPath();
+  const headed = defaultHeaded();
+  const display = ensureDisplay(headed);
+  const egress = await probeEgress({ cacheFile: PATHS.egressCache }).catch(() => ({ state: 'unknown', detail: 'probe threw' }));
+  const d = {
+    platform: KIND,
+    detectedBy: KIND_REASONS,
+    stateRoot: PATHS.root,
+    browser: chrome.path || 'playwright channel:chromium',
+    browserVia: chrome.why,
+    defaultMode: headed ? display.display : 'headless',
+    ...(display.downgraded ? { displayDowngraded: display.downgraded } : {}),
+    egress: egress.state,
+    egressDetail: egress.detail,
+    humanChannel: HUMAN_CHANNEL,
+  };
+  if (JSON_MODE) { out(d, ''); return; }
+  const pad = (k) => (k + ' '.repeat(18)).slice(0, 18);
+  const say = (line) => out(d, line);
+  for (const [k, v] of Object.entries(d)) say(`${pad(k)} ${Array.isArray(v) ? v.join(', ') : v}`);
+  if (d.egress === 'jailed') {
+    say('');
+    say('Egress is jailed: the browser cannot load web fonts, CDN scripts or third-party APIs.');
+    say('verify will class those as `sandboxBlocked` (info, never a defect) — but a page whose');
+    say('typeface never loaded gives text-metric findings about a render nobody else will see.');
+    say('Record a HAR where the network works, replay it here:');
+    say('  networked:  glassbox session open s --record-har run.har  …  glassbox session close s');
+    say('  sandbox:    glassbox session open s --har run.har');
+  }
+  if (!chrome.path && KIND !== 'win32') {
+    say('');
+    say('No chromium found on disk. Set GLASSBOX_CHROMIUM=/path/to/chrome, or install one —');
+    say('note that `npx playwright install` needs network the sandbox allowlist may not permit.');
+  }
+}
+
 const VERBS = new Set(['goto', 'click', 'dblclick', 'hover', 'type', 'press', 'scroll', 'observe', 'verify', 'read', 'dialog', 'drag', 'upload', 'select', 'settle', 'eval', 'screenshot', 'wait']);
 
 // ---- M5 artifacts (GET) + mcp shim ----------------------------------------
@@ -573,6 +629,12 @@ const VALUE_FLAGS = {
   '--frame': 'frame', '--expression': 'expression', '--mode': 'mode', '--breakpoint': 'breakpointId',
   // M5 eval/screenshot/wait
   '--theme': 'theme', '--sleep': 'sleep',
+  // Sandbox backend: the HAR fidelity bridge plus explicit environment pinning. --har replays a
+  // recording made on a networked machine, so web fonts and API responses exist in a container
+  // that cannot reach either; --record-har makes one. See src/daemon/stubs.mjs for why this is
+  // the load-bearing piece of the sandbox backend.
+  '--har': 'har', '--har-not-found': 'harNotFound', '--har-url': 'harUrl', '--record-har': 'recordHar',
+  '--timezone': 'timezone', '--locale': 'locale', '--out': 'out',
 };
 
 function parseArgs(argv) {
@@ -582,6 +644,10 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--json') JSON_MODE = true;
     else if (a === '--headed') opts.headed = true;
+    // Headed is the SANDBOX default: a headless container reports a 0px overlay scrollbar and so
+    // cannot see horizontal overflow at all, while headed-under-Xvfb reports the same 15px gutter
+    // Windows Chrome does. --headless is the opt-out.
+    else if (a === '--headless') opts.headless = true;
     else if (a === '--all') opts.all = true;
     else if (a === '--submit') opts.submit = true;
     else if (a === '--themes') opts.themes = true;
@@ -610,6 +676,12 @@ function parseArgs(argv) {
 }
 
 const HELP = `glassbox <command>   ·   CLI = MCP tools = same daemon. [--json] on any command for machine output.
+
+ENVIRONMENT
+  doctor                        (what this box will and won't let glassbox measure: browser,
+                                 display mode, egress, state root — all probed, none guessed)
+  export -s <session> [--out f] (latest verify report -> one self-contained .html; needs no daemon,
+                                 no browser and no live session — the sandbox stand-in for watch)
 
 SESSIONS
   daemon start|stop|status
@@ -686,6 +758,8 @@ async function main() {
     if (verb === 'dev') return await runDevVerb(opts);
     if (verb === 'mcp') return await runMcp();
     if (verb === 'artifacts') return await runArtifacts(opts);
+    if (verb === 'export') return await runExport(pos.slice(1), opts);
+    if (verb === 'doctor') return await runDoctor();
     if (verb === 'debug') return await runDebug(pos, opts);
     if (verb === 'style') return await runStyle(pos, opts);
     if (verb === 'shot') return await runVerb('screenshot', pos, opts); // alias

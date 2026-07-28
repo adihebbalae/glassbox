@@ -8,8 +8,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { PATHS, CODES, ANON_CLIENT, gbErr } from '../protocol.mjs';
+import { launchOptions, ensureDisplay, defaultHeaded, describePlatform, IS_SANDBOX } from '../platform.mjs';
 import { createJournal } from './journal.mjs';
 import { createConsoleBuffer, createNetworkTracker } from './buffers.mjs';
+import { installStubs, recordOptions, fontState } from './stubs.mjs';
 
 const NAME_RE = /^[\w.-]{1,64}$/;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -68,6 +70,7 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
   const persistent = { headless: null, headed: null };
   const launching = { headless: null, headed: null };
   const cdpEndpoint = { headless: null, headed: null }; // {port, browserWs} per mode, or null
+  let displayInfo = { display: 'headless' }; // what ensureDisplay actually gave us, for conditions
 
   async function ensureBrowser(headed) {
     const key = headed ? 'headed' : 'headless';
@@ -75,11 +78,25 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
     if (!launching[key]) {
       const udd = path.join(PATHS.chromeData, key);
       fs.mkdirSync(udd, { recursive: true });
+      // Launch options come from the platform seam and NOWHERE else (platform.mjs §2). On Windows
+      // that is still `channel:'chromium'`; in a container it resolves a Chromium by path, because
+      // playwright pins a browser revision per release and an image shipping a different one makes
+      // channel-resolution fail with "run playwright install" — which a package-registry-only
+      // egress allowlist cannot do.
+      displayInfo = ensureDisplay(headed);
+      const launchOpts = launchOptions({ headed: displayInfo.display !== 'headless' });
       launching[key] = chromium
-        .launchPersistentContext(udd, { channel: 'chromium', headless: !headed, args: ['--remote-debugging-port=0'] })
+        .launchPersistentContext(udd, launchOpts)
         .then(async (ctx) => {
           persistent[key] = ctx;
-          for (const p of ctx.pages()) p.close().catch(() => {}); // drop the default about:blank tab
+          // Drop the default about:blank tab — but NEVER the last one in headed mode. A headed
+          // Chromium exits when its final window closes, and a persistent context's default page
+          // IS that window: closing it takes the whole browser with it, and the next newContext
+          // fails with "Target page, context or browser has been closed". Headless has no window
+          // to lose, which is why this never showed up until headed became the sandbox default.
+          const pages = ctx.pages();
+          const keepOne = headed;
+          for (const p of pages.slice(keepOne ? 1 : 0)) p.close().catch(() => {});
           cdpEndpoint[key] = await readCdpEndpoint(udd); // best-effort; null if the file never appears
           return ctx;
         })
@@ -156,7 +173,13 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
       // WHOSE session this is. One machine-wide daemon serves every agent, so without this a
       // destroy verb cannot tell "clean up after me" from "take down everyone else too" (D12).
       client: String(opts.client || ANON_CLIENT).slice(0, 64),
-      headed: !!opts.headed,
+      // Headed is the SANDBOX default and headless the local one — deliberately inverted from
+      // every other container browser setup. Measured on an agent container image: headless
+      // Chromium reports a 0px scrollbar (overlay scrollbars), headed-under-Xvfb reports the same
+      // 15px reserved gutter Windows Chrome does. A 0px scrollbar silently hides the whole
+      // `100vw`-overflow and right-edge-clipping bug class, which is precisely what the layout
+      // audit exists to catch. `--headless` (or GLASSBOX_HEADLESS=1) opts back out.
+      headed: opts.headless ? false : (opts.headed === undefined ? defaultHeaded() : !!opts.headed),
       seq: 0,
       busy: false,
       queue: Promise.resolve(),
@@ -169,7 +192,22 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
       if (opts.viewport) ctxOpts.viewport = opts.viewport;
       if (opts.colorScheme) ctxOpts.colorScheme = opts.colorScheme;
       if (opts.baseUrl) ctxOpts.baseURL = opts.baseUrl;
+      // A container inherits UTC and an unset locale; a page that formats a date or a number then
+      // renders differently here than on the developer's machine for reasons that have nothing to
+      // do with their code. Pin both so the difference is a stated condition, not a surprise.
+      if (IS_SANDBOX) {
+        ctxOpts.timezoneId = opts.timezone || process.env.GLASSBOX_TZ || 'America/Los_Angeles';
+        ctxOpts.locale = opts.locale || process.env.GLASSBOX_LOCALE || 'en-US';
+      } else {
+        if (opts.timezone) ctxOpts.timezoneId = opts.timezone;
+        if (opts.locale) ctxOpts.locale = opts.locale;
+      }
+      Object.assign(ctxOpts, recordOptions(opts) || {});
       rec.context = await browser.newContext(ctxOpts);
+      // Routes must be installed on the CONTEXT, before any navigation: it is the only hook that
+      // survives newPage, popups and navigations (a page-scoped CDP session dies with the tab).
+      rec.stubs = await installStubs(rec.context, opts);
+      rec.recordHar = opts.recordHar ? String(opts.recordHar) : null;
       rec.page = await rec.context.newPage();
       rec.cdp = await rec.context.newCDPSession(rec.page);
       // The page target's id is stable for the tab's life (survives navigations) — cache it so the
@@ -186,6 +224,12 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
       rec.observe = { version: 0, navSeq: 0, navSeqAt: 0, registry: new Map() };
       // M3 theme-sweep plumbing: colorScheme rode into newContext above; themeAttr (e.g.
       // 'data-theme') is the site's own theme mechanism verify drives alongside emulateMedia.
+      rec.baseUrl = opts.baseUrl || null;
+      rec._tz = ctxOpts.timezoneId || null;
+      // Bound accessors so verify (which only ever holds a session record, never the manager) can
+      // ask what conditions it is measuring under and which origins are exempt from egress demotion.
+      rec.conditionsFn = (extra) => conditions(rec, extra);
+      rec.egressCtxFn = () => egressCtx(rec);
       rec.colorScheme = opts.colorScheme || null;
       rec.themeAttr = opts.themeAttr || null;
       // themeClass is themeAttr's sibling for the OTHER dominant mechanism: Tailwind's
@@ -260,7 +304,49 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
       idleMs: Date.now() - s.lastTouch,
       daemon: identity(),
       cdp: cdpBlock(s), // browser/target ws + DevTools link (null if no debug port)
+      conditions: conditions(s),
     };
+  }
+
+  /**
+   * The conditions a measurement was taken under. Every verify report carries this, because a
+   * finding without its conditions is a claim the instrument cannot support: "0 errors" measured
+   * with no fonts, no network and a software rasterizer is a different sentence from "0 errors" on
+   * the developer's machine, and only one of them is about their code.
+   */
+  function conditions(s, { fontEvidence = 0 } = {}) {
+    const plat = describePlatform();
+    const jailed = plat.egress === 'jailed';
+    return {
+      platform: plat.kind,
+      detectedBy: plat.detectedBy,
+      display: s?.headed ? displayInfo.display : 'headless',
+      browser: plat.browserPath,
+      raster: plat.raster,
+      egress: plat.egress,
+      fonts: fontState({ jailed, stubs: s?.stubs, evidence: fontEvidence }),
+      stubs: s?.stubs || null,
+      recordingHar: s?.recordHar || null,
+      viewport: s ? s.page.viewportSize() : null,
+      colorScheme: s?.colorScheme || 'light',
+      timezone: IS_SANDBOX ? (s?._tz || 'America/Los_Angeles') : 'system',
+      humanChannel: plat.humanChannel,
+    };
+  }
+
+  /** The app's own origins — never demoted to "the sandbox blocked it" (see egress.mjs). */
+  function appOrigins(s) {
+    const out = new Set();
+    for (const u of [s.page.url(), s.baseUrl]) {
+      if (!u) continue;
+      try { const p = new URL(u); out.add(`${p.protocol}//${p.host}`); } catch { /* about:blank */ }
+    }
+    return [...out];
+  }
+
+  /** The context an egress classification needs: policy + the origins that are exempt from it. */
+  function egressCtx(s) {
+    return { policy: describePlatform().egress === 'jailed' ? 'jailed' : 'open', origins: appOrigins(s) };
   }
 
   /** Just the CDP endpoint block for a session (used by the watch page's DevTools link). */
@@ -385,6 +471,8 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
     create,
     list,
     info,
+    conditions,
+    egressCtx,
     cdpInfo,
     destroy,
     destroyMine,

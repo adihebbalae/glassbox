@@ -6,7 +6,8 @@
 // Refs are the other path: registry → backendNodeId → a computed unique CSS path → locator (a
 // no-mutation route, so tagging the element never pollutes the mutation observer). A pending
 // native dialog is surfaced in every response and NEVER hangs the call (playwright-mcp #595).
-import { CODES, gbErr } from '../protocol.mjs';
+import { CODES, PATHS, gbErr } from '../protocol.mjs';
+import { exportReport, latestReport } from '../report-html.mjs';
 import { observe } from './observe.mjs';
 import { verify, read } from './verify.mjs';
 import { evalExpression, screenshotAction, waitFor, setViewport } from './extras.mjs';
@@ -319,6 +320,18 @@ async function respondDialog(session, body) {
 // ---- daemon entrypoint ------------------------------------------------------
 
 /** Route one POST /sessions/:name/<verb> — all run through the session's serial queue. */
+/** Latest verify report for a session -> one self-contained HTML file. Disk only, no browser. */
+function exportSession(name, body = {}) {
+  const rp = latestReport(PATHS.sessions, name);
+  if (!rp) {
+    throw gbErr(CODES.BAD_REQUEST, `no verify report on disk for session '${name}'`, {
+      field: 'session',
+      correction_hint: 'run verify first — export reads the report verify writes',
+    });
+  }
+  return { ...exportReport(rp, { out: body.out || null }), from: rp };
+}
+
 export async function handleAction(mgr, name, verb, body = {}) {
   const s = mgr._get(name); // throws NO_SESSION
   // M7: record an out-of-band event (a dev-server rebuild) in the session journal. Deliberately
@@ -351,6 +364,10 @@ export async function handleAction(mgr, name, verb, body = {}) {
   if (verb === 'wait') return mgr.runQueued(s, () => waitFor(s, body));
   // D11 — resize an EXISTING session (theme×viewport matrices without re-opening + re-seeding).
   if (verb === 'viewport') return mgr.runQueued(s, () => setViewport(s, body));
+  // Sandbox human channel: nobody can reach this box's loopback, so the report leaves as a file
+  // instead of a live screencast. Not queued — it touches disk, never the browser, so it works
+  // even while the session is paused at a breakpoint.
+  if (verb === 'export') return exportSession(name, body);
   if (ALL_VERBS.has(verb)) return mgr.runQueued(s, () => runOne(s, verb, body));
-  throw gbErr(CODES.BAD_REQUEST, `unknown action '${verb}'`, { field: 'verb', valid_values: [...ALL_VERBS, 'observe', 'verify', 'read', 'dialog', 'settle', 'eval', 'screenshot', 'wait', 'viewport', 'journal'] });
+  throw gbErr(CODES.BAD_REQUEST, `unknown action '${verb}'`, { field: 'verb', valid_values: [...ALL_VERBS, 'observe', 'verify', 'read', 'dialog', 'settle', 'eval', 'screenshot', 'wait', 'viewport', 'export', 'journal'] });
 }

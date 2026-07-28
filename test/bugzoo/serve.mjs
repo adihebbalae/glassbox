@@ -70,6 +70,12 @@ export function startBugzoo() {
       return res.end('not found');
     }
     res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
+    // M13: pages that reference a THIRD-PARTY origin can't hardcode its ephemeral port. The zoo
+    // rewrites the placeholder at serve time from GLASSBOX_TP_BASE, so one fixture file serves both
+    // the record leg (third party up) and the replay leg (third party down).
+    if (path.extname(file) === '.html' && process.env.GLASSBOX_TP_BASE) {
+      return res.end(fs.readFileSync(file, 'utf8').split('TP_BASE').join(process.env.GLASSBOX_TP_BASE));
+    }
     res.end(fs.readFileSync(file));
   });
 

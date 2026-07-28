@@ -6,21 +6,29 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { stateRoot, CHROME_MARKER as MARKER } from './platform.mjs';
 
 export const VERSION = '0.1.0';
 export const HOST = '127.0.0.1';
 
-const ROOT = path.join(process.env.LOCALAPPDATA || process.env.TEMP || '.', 'glassbox');
+// The state root now comes from the platform seam (platform.mjs §1). It used to end its fallback
+// chain in '.', which on any box without LOCALAPPDATA made the root RELATIVE — so the CLI, a
+// daemon spawned with a different cwd, and the test runner could each compute a different root and
+// then disagree about where daemon.json lives.
+const ROOT = stateRoot();
 export const PATHS = Object.freeze({
   root: ROOT,
   daemonFile: path.join(ROOT, 'daemon.json'),
   sessions: path.join(ROOT, 'sessions'),
   chromeData: path.join(ROOT, 'chrome-data'),
+  egressCache: path.join(ROOT, 'egress.json'),
 });
 
-// Every glassbox-launched chromium carries `...\glassbox\chrome-data\...` in its command
-// line via --user-data-dir; the orphan sweep matches on this marker (never a bare PID).
-export const CHROME_MARKER = 'glassbox';
+// Every glassbox-launched chromium carries `glassbox/chrome-data` in its command line via
+// --user-data-dir; the orphan sweep matches on this marker (never a bare PID). Defined in
+// platform.mjs (its consumers are the platform-specific reapers), re-exported here for the
+// call sites that already import it from the protocol contract.
+export const CHROME_MARKER = MARKER;
 
 export const CODES = Object.freeze({
   NO_SESSION: 'NO_SESSION',
@@ -134,7 +142,7 @@ export async function probeDaemon(d) {
 
 // The daemon entry, resolved once as a path string (NOT an import — no cycle: daemon.mjs imports
 // this file, this file only spawns it by path).
-const DAEMON_ENTRY = fileURLToPath(new URL('./daemon/daemon.mjs', import.meta.url));
+export const DAEMON_ENTRY = fileURLToPath(new URL('./daemon/daemon.mjs', import.meta.url));
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Read the discovery file, or null if absent/unreadable. */

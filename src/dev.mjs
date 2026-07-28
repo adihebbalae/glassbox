@@ -68,12 +68,17 @@ function defaultCmd(cwd) {
 const DEV_DIR = path.join(PATHS.root, 'dev');
 const recordPath = (cliPid) => path.join(DEV_DIR, `${cliPid}.json`);
 
-/** Kill a whole process tree: taskkill /T /F on win32, the negative-PID group kill on POSIX. */
+/**
+ * Kill a whole process tree. Both platforms now go through prockit's taskkillTree — `taskkill /T /F`
+ * on win32, a /proc descendant walk (leaves first, then the process group as a backstop) on POSIX.
+ *
+ * The POSIX path used to be a bare `kill(-pid)`. A dev server run through `shell:true` can leave a
+ * grandchild outside the group — m7 caught exactly one survivor — and a reaper that misses one node
+ * process leaves a port bound, which the NEXT run reports as "your dev server is already running".
+ */
 function killTree(pid) {
   if (!pid) return false;
-  if (process.platform === 'win32') return taskkillTree(pid);
-  try { process.kill(-pid, 'SIGKILL'); return true; } catch { /* not a group leader */ }
-  try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; }
+  return taskkillTree(pid);
 }
 
 function writeDevRecord(rec) {

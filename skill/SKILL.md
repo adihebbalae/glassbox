@@ -136,6 +136,81 @@ gb_wait    {session:"login-fix", for:{url:"/dashboard"}}
 gb_session {op:"close", name:"login-fix"}
 ```
 
+
+## 9. Running in a sandbox (container / cloud agent session)
+
+Glassbox has two backends behind one verb surface. If you are an agent in an ephemeral Linux
+container, everything above still applies — `verify`, `act`, `style`, `debug`, `coverage` all work,
+including the cascade and the white-box lanes. Four things change, and the tool tells you which.
+
+**Run `glassbox doctor` first.** One command, every answer measured rather than guessed: which
+Chromium it found, whether it is headed or headless, whether outbound traffic is open or jailed,
+and where state lives. Do this before you build a verify loop on top of it.
+
+**The app under test must run in the sandbox.** A container's egress proxy refuses everything
+outside the package registries, so tunnels to your machine and preview-deployment URLs are both
+structurally unreachable — not slow, not fiddly, unreachable. Start the dev server here (background
+it with `setsid`, or use `glassbox dev`, which owns the detachment for you) and point the session
+at localhost.
+
+**Headed is the default here, and that is deliberate.** A headless container reports a 0px scrollbar
+and therefore cannot see horizontal overflow or right-edge clipping at all; headed under Xvfb
+reports the same 15px gutter a real desktop Chrome does. Pass `--headless` only if you know you do
+not care about that bug class.
+
+**`sandboxBlocked` is not a defect.** Requests to external origins that the jail refuses are split
+into their own bucket, collapsed to one info line naming the hosts, and kept out of `ok`. Requests
+to localhost and to your own origin are NEVER demoted — a broken local API is still your bug.
+
+**Read the `conditions` block before you trust a clean report.** Every verify carries it:
+
+```
+conditions: { platform, display, browser, raster, egress, fonts, viewport, colorScheme, timezone, load }
+```
+
+and every finding carries a `portability` tag:
+
+| tag | means |
+| --- | --- |
+| `portable` | computed from CSS values, the cascade, the DOM, HTTP status — true on any machine |
+| `font-dependent` | measured off rendered text (overflow / occlusion / clipping / CLS) and the fonts were substituted, so this is about THIS render |
+| `sandbox-artifact` | a fact about the environment, not about your code |
+
+`fonts: substituted` means web fonts were blocked AND the page wanted them. It is asserted on
+evidence, so `local-only` (a page with no web fonts) is not a warning.
+
+**Fix font-dependent findings with a HAR, not with guesswork.** Record on a machine that has a
+network, replay in the sandbox — one file carries the API responses AND the font binaries:
+
+```
+# where the network works
+glassbox session open rec --record-har run.har
+glassbox goto <url> -s rec
+glassbox wait -s rec --sleep 1500        # in-flight requests record as status -1 with no body
+glassbox session close rec               # playwright writes the HAR on CLOSE — never kill -9 it
+
+# in the sandbox
+glassbox session open s --har run.har    # --har-not-found abort  => any unrecorded request is a finding
+glassbox verify -s s                     # conditions now say fonts: har-replayed
+```
+
+This is worth more than removing noise: a replayed stylesheet can carry a real defect the jailed run
+could not see, because the file never loaded.
+
+**`gb_watch` does not work here** — nobody can reach this box's loopback. Export instead:
+
+```
+glassbox export -s <session> [--out report.html]     # CLI
+gb_session {op:"export", name:"<session>"}           # MCP
+```
+
+One self-contained HTML file: findings, conditions, portability tags, screenshots inlined as data
+URLs. It opens on a machine with no network and no glassbox, which the screencast never did — send
+it to your human, or commit it next to the code.
+
+**Cleanup is simpler here.** The container is single-tenant, so there is no other agent's work to
+protect: `glassbox kill-all --force` is safe and is the normal end of a sandbox run.
+
 ## Notes
 
 - Structured errors are self-correcting: a `STALE_REF`, `PAUSED`, `NO_SESSION`, `NO_TARGET`, or `ACT_OCCLUDED` result carries the code, a correction hint, and (for bad names/refs/coverers) the specifics — read it and retry, don't give up.

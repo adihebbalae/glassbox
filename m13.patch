@@ -1,0 +1,2466 @@
+From 7dfc9320c9f11c4481d0869b2e8f2787e916c288 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 28 Jul 2026 06:42:32 +0000
+Subject: [PATCH] feat(M13): a sandbox backend, behind one platform seam
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Glassbox now runs in two places: a developer's machine, and an ephemeral Linux
+container where an agent both writes the code and checks it. One codebase, two
+backends — the verb surface, the finding engine and the noise discipline are
+shared and untouched; four members swap in src/platform.mjs and nowhere else.
+
+LAUNCHER. Chromium resolved by path rather than by playwright's pinned revision
+(an image shipping a different one fails channel resolution, and `playwright
+install` cannot fetch through a package-registry-only egress allowlist). Headed
+under Xvfb is the sandbox DEFAULT, measured not assumed: headless reports a 0px
+overlay scrollbar and therefore cannot see horizontal overflow or right-edge
+clipping at all, while headed reports the same 15px gutter Windows Chrome does.
+Fallout: a headed browser exits when its last window closes, and a persistent
+context's default about:blank page IS that window — ensureBrowser now keeps it.
+
+NETWORK POLICY. Egress is probed at daemon start, not inferred. Under a jailed
+policy a fifth bucket, `sandboxBlocked`, takes external requests the proxy
+refused: collapsed to one info line naming the hosts, demoted never deleted,
+excluded from ok. Loopback and own-origin failures are NEVER demoted — a broken
+local API cannot be excused as "the sandbox did it".
+
+CONDITIONS + PORTABILITY. Every verify carries the conditions it measured under
+(platform/display/browser/raster/egress/fonts/viewport/scheme/tz/load) and every
+finding carries `portable` | `font-dependent` | `sandbox-artifact`. Contrast and
+the cascade are computed from CSS values and survive any renderer; overflow and
+CLS are measured off rendered text and do not. `fonts: substituted` is asserted
+on evidence, so a page with no web fonts is never falsely warned.
+
+HAR BRIDGE. --record-har on a networked machine, --har in the sandbox. One file
+carries the API responses AND the font binaries, so text-metric findings stop
+being about a substitute typeface. M13 proves the round trip — including that
+the HAR run SEES a low-contrast defect the jailed run could not, because the
+stylesheet carrying it never loaded. It restores findings, not just silence.
+
+HUMAN CHANNEL. gb_watch needs a person who can reach loopback; nobody can here.
+`glassbox export` / gb_session{op:'export'} writes one self-contained HTML with
+findings, conditions and screenshots inlined. (Glassbox verified its own export
+and found a dt/dd-outside-dl violation in it. Fixed.)
+
+LIFECYCLE — three corrections, all the same shape: a check that cannot look must
+not report "clean".
+  * prockit is now dispatch over prockit-win32 + a new prockit-posix (/proc, no
+    subprocesses). Every function used to shell out to powershell.exe, so on
+    Linux they returned [] — the suite's "0 precondition clean" and "zero
+    strays" checks PASSED VACUOUSLY while browsers leaked between tests.
+  * the stray marker was the bare string 'glassbox'; point GLASSBOX_HOME
+    elsewhere and the reaper matched nothing forever. It now matches the real
+    chrome-data path, and daemons the resolved daemon entry.
+  * a zombie is not alive. kill(pid,0) succeeds on one, so a killed child read
+    as running and every "is the tree down?" loop spun to its timeout.
+  * dev's POSIX tree kill was a bare kill(-pid); a shell:true grandchild escapes
+    the group. Now the same /proc walk.
+
+STATE ROOT. The fallback chain ended in '.', making the root relative — the CLI,
+a daemon spawned with another cwd and the test runner could each compute a
+different one and then disagree about where daemon.json lives.
+
+Also: `glassbox doctor` (browser, display mode, egress, state root — all probed,
+none guessed), test/m13.mjs (31 checks), docs/01-architecture.md §11, README and
+skill/SKILL.md §9.
+
+Suite: 13 modules, 293 checks, green on Linux. Was 3/10 on m1 alone.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P4NXSfNhoxH9uz4QHU7NcJ
+---
+ README.md                     |  66 ++++++-
+ docs/01-architecture.md       | 119 +++++++++++++
+ package.json                  |   3 +-
+ skill/SKILL.md                |  75 ++++++++
+ src/cli.mjs                   |  74 ++++++++
+ src/daemon/actions.mjs        |  21 ++-
+ src/daemon/daemon.mjs         |   9 +
+ src/daemon/egress.mjs         | 114 +++++++++++++
+ src/daemon/prockit-posix.mjs  | 159 +++++++++++++++++
+ src/daemon/prockit-win32.mjs  | 103 +++++++++++
+ src/daemon/prockit.mjs        | 124 +++-----------
+ src/daemon/sessions.mjs       |  94 +++++++++-
+ src/daemon/stubs.mjs          |  95 +++++++++++
+ src/daemon/verify.mjs         |  93 +++++++++-
+ src/dev.mjs                   |  13 +-
+ src/mcp-shim.mjs              |  19 ++-
+ src/platform.mjs              | 312 ++++++++++++++++++++++++++++++++++
+ src/protocol.mjs              |  18 +-
+ src/report-html.mjs           | 160 +++++++++++++++++
+ test/bugzoo/serve.mjs         |   6 +
+ test/bugzoo/thirdparty.html   |  15 ++
+ test/fixtures/third-party.mjs |  48 ++++++
+ test/m13.mjs                  | 199 ++++++++++++++++++++++
+ 23 files changed, 1812 insertions(+), 127 deletions(-)
+ create mode 100644 src/daemon/egress.mjs
+ create mode 100644 src/daemon/prockit-posix.mjs
+ create mode 100644 src/daemon/prockit-win32.mjs
+ create mode 100644 src/daemon/stubs.mjs
+ create mode 100644 src/platform.mjs
+ create mode 100644 src/report-html.mjs
+ create mode 100644 test/bugzoo/thirdparty.html
+ create mode 100644 test/fixtures/third-party.mjs
+ create mode 100644 test/m13.mjs
+
+diff --git a/README.md b/README.md
+index 98793db..63335c3 100644
+--- a/README.md
++++ b/README.md
+@@ -10,8 +10,10 @@ It is **not** a general web agent, a scraper, or a test runner. It verifies the
+ on localhost, right now.
+ 
+ Status: **v0.1.0**, first complete build. Windows-first (developed and proven on Windows 11 / Node
+-24); the code is plain ESM with no win32-only APIs outside the process reaper, but only Windows is
+-tested.
++24), and since M13 also **sandbox-capable**: the same codebase runs inside an ephemeral Linux agent
++container behind a platform seam, with the full suite (13 modules, 293 checks) green on both. The
++process reaper is now two implementations behind one dispatch — `taskkill`/WMI on win32, `/proc` on
++POSIX — rather than a win32-only file that silently answered "nothing found" everywhere else.
+ 
+ ---
+ 
+@@ -48,6 +50,20 @@ npx playwright install chromium  # the browser binary itself
+ Node 24 (Node 22+ should work; 24 is what the suite runs on). Optional: `npm link` to put
+ `glassbox` on your PATH — every example below otherwise works as `node src/cli.mjs …`.
+ 
++### In a container
++
++`npx playwright install` needs network an agent sandbox's allowlist usually does not permit, and
++playwright pins a browser revision per release — so a container that ships a *different* revision
++fails channel resolution. Glassbox resolves a Chromium by path instead. Point it at one, or let it
++find one under `PLAYWRIGHT_BROWSERS_PATH`:
++
++```bash
++glassbox doctor        # browser, display mode, egress, state root — all probed, none guessed
++```
++
++`doctor` is the first thing to run anywhere new. See §"Sandbox" below and `docs/01-architecture.md`
++§11 for what changes and why.
++
+ ---
+ 
+ ## 60-second quickstart
+@@ -313,3 +329,49 @@ no computed style can explain).
+ No cloud/remote browsers, no stealth or CAPTCHA anything, no cross-engine (BiDi) abstraction, no
+ performance-trace UI, no scraping ergonomics. React/Vue component-tree inspection is deliberately
+ out (version-fragile). macOS/Linux are unproven, not unsupported.
++
++---
++
++## Sandbox
++
++The same instrument, in an ephemeral Linux container where an agent writes the code and checks it.
++`docs/01-architecture.md` §11 is the decision record; the short version:
++
++| | local | sandbox |
++| --- | --- | --- |
++| browser | `channel:'chromium'` | resolved by path, `--disable-dev-shm-usage` |
++| default mode | headless | **headed under Xvfb** |
++| egress | open | jailed — measured at daemon start, not assumed |
++| failed external request | a defect | `sandboxBlocked`: one info line, excluded from `ok` |
++| fonts | system | `substituted` (on evidence) or `har-replayed` |
++| human channel | `watch` — live screencast | `export` — one self-contained `.html` |
++| cleanup | `kill-all --mine` protects other agents | single-tenant; `--force` is normal |
++
++Headed is the sandbox default because it is *more accurate*, not less: headless Chromium reports a
++0px overlay scrollbar and therefore cannot see horizontal overflow or right-edge clipping at all,
++while headed-under-Xvfb reports the same 15px gutter a desktop Chrome does.
++
++Every verify carries a `conditions` block and every finding a `portability` tag — `portable`
++(computed from CSS values, the cascade, the DOM, HTTP status), `font-dependent` (measured off
++rendered text, with a substitute typeface), or `sandbox-artifact`. A finding without its conditions
++is a claim the instrument cannot support.
++
++**The HAR bridge** is what connects the two halves. Record where the network works, replay where it
++does not — one file carries the API responses and the font binaries:
++
++```bash
++# networked machine
++glassbox session open rec --record-har run.har
++glassbox goto http://localhost:5173/ -s rec
++glassbox wait -s rec --sleep 1500
++glassbox session close rec          # playwright writes the HAR on CLOSE
++
++# sandbox
++glassbox session open s --har run.har
++glassbox verify -s s                # conditions: fonts: har-replayed
++glassbox export -s s --out report.html
++```
++
++M13 proves the round trip, including the part that matters most: **the HAR run sees a low-contrast
++defect the jailed run could not see at all**, because the stylesheet carrying it never loaded. The
++bridge restores findings; it does not just remove noise.
+diff --git a/docs/01-architecture.md b/docs/01-architecture.md
+index d9d303a..8a743c3 100644
+--- a/docs/01-architecture.md
++++ b/docs/01-architecture.md
+@@ -185,3 +185,122 @@ file paths, always.
+ Cloud/remote browsers; stealth/CAPTCHA anything; cross-engine (BiDi) abstraction; perf-trace
+ UI (chrome-devtools-mcp does it; wrap later); Electron shell; scraping ergonomics. WebMCP
+ (Chrome 149 origin trial) is a watch-item only.
++
++## 11. The platform seam (2026-07-28)
++
++Glassbox runs in two places now: a developer's own machine, and an ephemeral Linux container where
++an agent both writes the code and checks it. **One codebase, two backends** — the verb surface, the
++finding engine, the noise discipline and the report shape are shared and untouched. Four members
++swap underneath, all decided in `src/platform.mjs` and nowhere else:
++
++1. **Launcher.** Local: `channel:'chromium'`, headless default. Sandbox: a Chromium resolved by
++   PATH (playwright pins a browser revision per release; an image shipping a different one fails
++   channel resolution, and `playwright install` cannot fetch through a package-registry-only egress
++   allowlist), **headed under Xvfb by default**, `--disable-dev-shm-usage`, timezone and locale
++   pinned rather than inherited.
++2. **Network policy.** Local: passthrough. Sandbox: a fifth taxonomy bucket plus HAR replay.
++3. **Human channel.** Local: the live `watch` screencast. Sandbox: an exported self-contained HTML
++   report, because nobody can reach that box's loopback.
++4. **Lifecycle.** Same daemon both sides; ownership machinery is a no-op in a single-tenant
++   container, and the process reaper gets a real POSIX implementation.
++
++### 11.1 Headed is the sandbox default
++
++Measured, not assumed: headless Chromium reports a scrollbar width of **0px** (overlay scrollbars);
++headed under Xvfb reports **15px**, the same reserved gutter Windows Chrome gives you. A 0px
++scrollbar makes `100vw` horizontal overflow and right-edge clipping *undetectable* — the exact bug
++class the layout audit exists to catch. Headless also leaves `HeadlessChrome` in the UA, which apps
++branch on. Xvfb costs one ~30MB process; the bug class costs more.
++
++Fallout worth recording: a headed Chromium exits when its last window closes, and a persistent
++context's default `about:blank` page IS that window. `ensureBrowser` used to close it
++unconditionally; in headed mode that took the browser with it and the next `newContext` failed with
++"Target page, context or browser has been closed". Headless has no window to lose, which is why it
++never surfaced before.
++
++### 11.2 Egress is measured, and gets its own bucket
++
++An agent sandbox routes outbound traffic through an allowlisting proxy: package registries pass,
++everything else gets 403. Verified on the reference image for curl, Node, Playwright's request
++context and in-page `fetch`, with and without an explicit `--proxy-server`. Two consequences that
++are *not* the caller's code:
++
++- **Tunnels and preview deployments are structurally dead.** Both need the container to fetch a
++  public URL. The app under test must run in the sandbox; there is no second option to design for.
++- **The four-bucket taxonomy inverts.** Run a normal app in that jail and every font, CDN script
++  and API call lands in `failed`, so verify reports a wall of red that says nothing about the code —
++  and real failures disappear inside the noise.
++
++So: `sandboxBlocked`, a fifth bucket, filled only on evidence (proxy-refusal errorText, or 403/407)
++and never for a same-origin or loopback request — *a broken local API can never be excused as "the
++sandbox did it"*. Blocked rows are demoted, never deleted (the contract `ignore404` already keeps),
++collapse to one info line naming the hosts, and are excluded from `ok`. The daemon **probes** egress
++at startup against a canary rather than inferring it from environment variables; the report states
++what the probe found.
++
++### 11.3 Conditions, and per-finding portability
++
++The W3 lesson (a warm load quietly loses first-load findings, so every report says which it
++measured) generalises to the environment itself. Every verify now carries a `conditions` block —
++platform, display mode, browser, raster, egress, fonts, viewport, colour scheme, timezone, load —
++and every finding carries a `portability` tag:
++
++- `portable` — computed from values the browser was *given*: CSS colours and contrast, the cascade,
++  the DOM, HTTP status, coverage, hit-test occlusion. Means the same thing on any machine.
++- `font-dependent` — measured off *rendered text*: overflow, occlusion, clipping, CLS. This image
++  has Liberation and DejaVu and no Segoe UI, Inter or Roboto, so `system-ui` resolves to a face the
++  developer never sees. Tagged only when fonts really were substituted.
++- `sandbox-artifact` — a fact about the environment, not the code.
++
++`fonts: substituted` is asserted on **evidence** (blocked font/stylesheet requests, plus FontFaces
++the browser reports as failed), never on the mere fact of being in a container. A page that ships no
++web fonts loses nothing to a jailed network, and warning it anyway is the same sin as a false
++all-clear pointed the other way.
++
++### 11.4 The HAR bridge
++
++The load-bearing piece, and the only thing that makes the two Glassboxes one system:
++
++```
++networked machine:  glassbox session open s --record-har run.har  …  glassbox session close s
++sandbox:            glassbox session open s --har run.har
++```
++
++One artifact fixes three things at once — egress (the requests resolve), fonts (a HAR embeds the
++font payloads, so text metrics become real and `font-dependent` findings become portable), and
++determinism (same bytes every run). M13 proves it end to end, and proves the part that matters
++most: the HAR run **sees a low-contrast defect the jailed run could not see at all**, because the
++stylesheet that carried it never loaded. The bridge does not merely silence noise; it restores
++findings.
++
++Recording gotchas, both learned the hard way: playwright writes the HAR on **context close**, so a
++recording session must be closed cleanly and settled first (an in-flight request records as status
++-1 with no body); and **cross-origin fonts are CORS-restricted**, so a third-party font with no
++`Access-Control-Allow-Origin` silently never loads and never records.
++
++### 11.5 Lifecycle: what a reaper must never do
++
++`prockit.mjs` is now platform dispatch over `prockit-win32.mjs` and a new `prockit-posix.mjs`
++(`/proc`, no subprocesses, works in a stripped image with no procps). Three corrections fell out,
++all of the same shape — *a check that cannot look must not report "clean"*:
++
++- Every one of these functions shelled out to `powershell.exe`, so on Linux they returned `[]`. The
++  suite's opening `0 precondition clean` and closing `zero strays` checks therefore **passed
++  vacuously** while browsers leaked between tests. They now report real counts (18 → 0).
++- The stray marker was the bare string `'glassbox'`, on the assumption the state root contains it.
++  Point `GLASSBOX_HOME` elsewhere — which the suite must, so a run never reaps a developer's live
++  sessions — and the reaper matched nothing forever. It now matches the actual `chrome-data` path,
++  and daemons match the resolved daemon entry rather than a directory name.
++- **A zombie is not alive.** `process.kill(pid,0)` succeeds on a zombie, so a killed child reads as
++  running; in a container whose PID 1 does not reap, every "is the tree down?" loop spins to its
++  timeout and reports a leak that does not exist. `processAlive` now reads the state field.
++
++`dev`'s POSIX tree kill was a bare `kill(-pid)`; a `shell:true` grandchild can escape the group, so
++it now goes through the same `/proc` walk.
++
++### 11.6 State root
++
++`LOCALAPPDATA || TEMP || '.'` ended in a **relative** path, so the CLI, a daemon spawned with a
++different cwd, and the test runner could each compute a different root and then disagree about
++where `daemon.json` lives — a discovery file nobody can find is indistinguishable from a dead
++daemon. The root is now always absolute: `GLASSBOX_HOME` > platform default > tmp.
+diff --git a/package.json b/package.json
+index b716499..fc1b0e4 100644
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+     "doc": "docs"
+   },
+   "scripts": {
+-    "test": "node test/m1.mjs && node test/m2.mjs && node test/m3.mjs && node test/m4.mjs && node test/m5.mjs && node test/m6.mjs && node test/m7.mjs && node test/m8.mjs && node test/m9.mjs && node test/m10.mjs && node test/m11.mjs && node test/m12.mjs",
++    "test": "node test/m1.mjs && node test/m2.mjs && node test/m3.mjs && node test/m4.mjs && node test/m5.mjs && node test/m6.mjs && node test/m7.mjs && node test/m8.mjs && node test/m9.mjs && node test/m10.mjs && node test/m11.mjs && node test/m12.mjs && node test/m13.mjs",
+     "test:m1": "node test/m1.mjs",
+     "test:m2": "node test/m2.mjs",
+     "test:m3": "node test/m3.mjs",
+@@ -20,6 +20,7 @@
+     "test:m10": "node test/m10.mjs",
+     "test:m11": "node test/m11.mjs",
+     "test:m12": "node test/m12.mjs",
++    "test:m13": "node test/m13.mjs",
+     "test:live": "node test/live-wcii.mjs"
+   },
+   "keywords": [],
+diff --git a/skill/SKILL.md b/skill/SKILL.md
+index ecf26d9..f1e4607 100644
+--- a/skill/SKILL.md
++++ b/skill/SKILL.md
+@@ -136,6 +136,81 @@ gb_wait    {session:"login-fix", for:{url:"/dashboard"}}
+ gb_session {op:"close", name:"login-fix"}
+ ```
+ 
++
++## 9. Running in a sandbox (container / cloud agent session)
++
++Glassbox has two backends behind one verb surface. If you are an agent in an ephemeral Linux
++container, everything above still applies — `verify`, `act`, `style`, `debug`, `coverage` all work,
++including the cascade and the white-box lanes. Four things change, and the tool tells you which.
++
++**Run `glassbox doctor` first.** One command, every answer measured rather than guessed: which
++Chromium it found, whether it is headed or headless, whether outbound traffic is open or jailed,
++and where state lives. Do this before you build a verify loop on top of it.
++
++**The app under test must run in the sandbox.** A container's egress proxy refuses everything
++outside the package registries, so tunnels to your machine and preview-deployment URLs are both
++structurally unreachable — not slow, not fiddly, unreachable. Start the dev server here (background
++it with `setsid`, or use `glassbox dev`, which owns the detachment for you) and point the session
++at localhost.
++
++**Headed is the default here, and that is deliberate.** A headless container reports a 0px scrollbar
++and therefore cannot see horizontal overflow or right-edge clipping at all; headed under Xvfb
++reports the same 15px gutter a real desktop Chrome does. Pass `--headless` only if you know you do
++not care about that bug class.
++
++**`sandboxBlocked` is not a defect.** Requests to external origins that the jail refuses are split
++into their own bucket, collapsed to one info line naming the hosts, and kept out of `ok`. Requests
++to localhost and to your own origin are NEVER demoted — a broken local API is still your bug.
++
++**Read the `conditions` block before you trust a clean report.** Every verify carries it:
++
++```
++conditions: { platform, display, browser, raster, egress, fonts, viewport, colorScheme, timezone, load }
++```
++
++and every finding carries a `portability` tag:
++
++| tag | means |
++| --- | --- |
++| `portable` | computed from CSS values, the cascade, the DOM, HTTP status — true on any machine |
++| `font-dependent` | measured off rendered text (overflow / occlusion / clipping / CLS) and the fonts were substituted, so this is about THIS render |
++| `sandbox-artifact` | a fact about the environment, not about your code |
++
++`fonts: substituted` means web fonts were blocked AND the page wanted them. It is asserted on
++evidence, so `local-only` (a page with no web fonts) is not a warning.
++
++**Fix font-dependent findings with a HAR, not with guesswork.** Record on a machine that has a
++network, replay in the sandbox — one file carries the API responses AND the font binaries:
++
++```
++# where the network works
++glassbox session open rec --record-har run.har
++glassbox goto <url> -s rec
++glassbox wait -s rec --sleep 1500        # in-flight requests record as status -1 with no body
++glassbox session close rec               # playwright writes the HAR on CLOSE — never kill -9 it
++
++# in the sandbox
++glassbox session open s --har run.har    # --har-not-found abort  => any unrecorded request is a finding
++glassbox verify -s s                     # conditions now say fonts: har-replayed
++```
++
++This is worth more than removing noise: a replayed stylesheet can carry a real defect the jailed run
++could not see, because the file never loaded.
++
++**`gb_watch` does not work here** — nobody can reach this box's loopback. Export instead:
++
++```
++glassbox export -s <session> [--out report.html]     # CLI
++gb_session {op:"export", name:"<session>"}           # MCP
++```
++
++One self-contained HTML file: findings, conditions, portability tags, screenshots inlined as data
++URLs. It opens on a machine with no network and no glassbox, which the screencast never did — send
++it to your human, or commit it next to the code.
++
++**Cleanup is simpler here.** The container is single-tenant, so there is no other agent's work to
++protect: `glassbox kill-all --force` is safe and is the normal end of a sandbox run.
++
+ ## Notes
+ 
+ - Structured errors are self-correcting: a `STALE_REF`, `PAUSED`, `NO_SESSION`, `NO_TARGET`, or `ACT_OCCLUDED` result carries the code, a correction hint, and (for bad names/refs/coverers) the specifics — read it and retry, don't give up.
+diff --git a/src/cli.mjs b/src/cli.mjs
+index 56a1785..cb58066 100644
+--- a/src/cli.mjs
++++ b/src/cli.mjs
+@@ -12,6 +12,8 @@ import {
+ import {
+   verifyGlassboxPid, processAlive, taskkillTree, listGlassboxChromium, listGlassboxDaemons, sweepOrphans,
+ } from './daemon/prockit.mjs';
++import { exportReport, latestReport } from './report-html.mjs';
++import { KIND, KIND_REASONS, chromiumPath, defaultHeaded, ensureDisplay, probeEgress, HUMAN_CHANNEL } from './platform.mjs';
+ import { runDev, sweepDevOrphans } from './dev.mjs';
+ 
+ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+@@ -518,6 +520,60 @@ async function runVerb(verb, pos, opts) {
+   printResult(verb, resp);
+ }
+ 
++// `export` is CLI-local on purpose: it reads an on-disk report, so it needs no daemon, no browser
++// and no session still alive. You can export yesterday's run.
++async function runExport(pos, opts) {
++  const name = opts.session || pos[0];
++  if (!name) fail({ code: 'BAD_REQUEST', message: 'export needs a session: glassbox export -s <session> [--out file.html]', field: 'session' });
++  const rp = latestReport(PATHS.sessions, name);
++  if (!rp) fail({ code: 'NO_SESSION', message: `no verify report on disk for session '${name}'`, correction_hint: 'run `glassbox verify -s ' + name + '` first — export reads the report it writes' });
++  const res = exportReport(rp, { out: opts.out ? unmangleMsysPath(opts.out) : null });
++  out({ ...res, from: rp }, `exported ${res.findings} finding(s) → ${res.path}  (${Math.round(res.bytes / 1024)}kb, self-contained)`);
++}
++
++/**
++ * `doctor` — what this machine will and will not let glassbox measure, before you build anything on
++ * top of it. Every line is a MEASUREMENT, not a guess: it finds the browser, brings up a display if
++ * one is needed, and probes egress for real. In a container the answers change what a report means,
++ * so the report states them; doctor is the same information ahead of time.
++ */
++async function runDoctor() {
++  const chrome = chromiumPath();
++  const headed = defaultHeaded();
++  const display = ensureDisplay(headed);
++  const egress = await probeEgress({ cacheFile: PATHS.egressCache }).catch(() => ({ state: 'unknown', detail: 'probe threw' }));
++  const d = {
++    platform: KIND,
++    detectedBy: KIND_REASONS,
++    stateRoot: PATHS.root,
++    browser: chrome.path || 'playwright channel:chromium',
++    browserVia: chrome.why,
++    defaultMode: headed ? display.display : 'headless',
++    ...(display.downgraded ? { displayDowngraded: display.downgraded } : {}),
++    egress: egress.state,
++    egressDetail: egress.detail,
++    humanChannel: HUMAN_CHANNEL,
++  };
++  if (JSON_MODE) { out(d, ''); return; }
++  const pad = (k) => (k + ' '.repeat(18)).slice(0, 18);
++  const say = (line) => out(d, line);
++  for (const [k, v] of Object.entries(d)) say(`${pad(k)} ${Array.isArray(v) ? v.join(', ') : v}`);
++  if (d.egress === 'jailed') {
++    say('');
++    say('Egress is jailed: the browser cannot load web fonts, CDN scripts or third-party APIs.');
++    say('verify will class those as `sandboxBlocked` (info, never a defect) — but a page whose');
++    say('typeface never loaded gives text-metric findings about a render nobody else will see.');
++    say('Record a HAR where the network works, replay it here:');
++    say('  networked:  glassbox session open s --record-har run.har  …  glassbox session close s');
++    say('  sandbox:    glassbox session open s --har run.har');
++  }
++  if (!chrome.path && KIND !== 'win32') {
++    say('');
++    say('No chromium found on disk. Set GLASSBOX_CHROMIUM=/path/to/chrome, or install one —');
++    say('note that `npx playwright install` needs network the sandbox allowlist may not permit.');
++  }
++}
++
+ const VERBS = new Set(['goto', 'click', 'dblclick', 'hover', 'type', 'press', 'scroll', 'observe', 'verify', 'read', 'dialog', 'drag', 'upload', 'select', 'settle', 'eval', 'screenshot', 'wait']);
+ 
+ // ---- M5 artifacts (GET) + mcp shim ----------------------------------------
+@@ -573,6 +629,12 @@ const VALUE_FLAGS = {
+   '--frame': 'frame', '--expression': 'expression', '--mode': 'mode', '--breakpoint': 'breakpointId',
+   // M5 eval/screenshot/wait
+   '--theme': 'theme', '--sleep': 'sleep',
++  // Sandbox backend: the HAR fidelity bridge plus explicit environment pinning. --har replays a
++  // recording made on a networked machine, so web fonts and API responses exist in a container
++  // that cannot reach either; --record-har makes one. See src/daemon/stubs.mjs for why this is
++  // the load-bearing piece of the sandbox backend.
++  '--har': 'har', '--har-not-found': 'harNotFound', '--har-url': 'harUrl', '--record-har': 'recordHar',
++  '--timezone': 'timezone', '--locale': 'locale', '--out': 'out',
+ };
+ 
+ function parseArgs(argv) {
+@@ -582,6 +644,10 @@ function parseArgs(argv) {
+     const a = argv[i];
+     if (a === '--json') JSON_MODE = true;
+     else if (a === '--headed') opts.headed = true;
++    // Headed is the SANDBOX default: a headless container reports a 0px overlay scrollbar and so
++    // cannot see horizontal overflow at all, while headed-under-Xvfb reports the same 15px gutter
++    // Windows Chrome does. --headless is the opt-out.
++    else if (a === '--headless') opts.headless = true;
+     else if (a === '--all') opts.all = true;
+     else if (a === '--submit') opts.submit = true;
+     else if (a === '--themes') opts.themes = true;
+@@ -611,6 +677,12 @@ function parseArgs(argv) {
+ 
+ const HELP = `glassbox <command>   ·   CLI = MCP tools = same daemon. [--json] on any command for machine output.
+ 
++ENVIRONMENT
++  doctor                        (what this box will and won't let glassbox measure: browser,
++                                 display mode, egress, state root — all probed, none guessed)
++  export -s <session> [--out f] (latest verify report -> one self-contained .html; needs no daemon,
++                                 no browser and no live session — the sandbox stand-in for watch)
++
+ SESSIONS
+   daemon start|stop|status
+   session open <name> [--headed] [--viewport WxH] [--color light|dark] [--base-url URL]
+@@ -686,6 +758,8 @@ async function main() {
+     if (verb === 'dev') return await runDevVerb(opts);
+     if (verb === 'mcp') return await runMcp();
+     if (verb === 'artifacts') return await runArtifacts(opts);
++    if (verb === 'export') return await runExport(pos.slice(1), opts);
++    if (verb === 'doctor') return await runDoctor();
+     if (verb === 'debug') return await runDebug(pos, opts);
+     if (verb === 'style') return await runStyle(pos, opts);
+     if (verb === 'shot') return await runVerb('screenshot', pos, opts); // alias
+diff --git a/src/daemon/actions.mjs b/src/daemon/actions.mjs
+index 71c9bd5..52f3a98 100644
+--- a/src/daemon/actions.mjs
++++ b/src/daemon/actions.mjs
+@@ -6,7 +6,8 @@
+ // Refs are the other path: registry → backendNodeId → a computed unique CSS path → locator (a
+ // no-mutation route, so tagging the element never pollutes the mutation observer). A pending
+ // native dialog is surfaced in every response and NEVER hangs the call (playwright-mcp #595).
+-import { CODES, gbErr } from '../protocol.mjs';
++import { CODES, PATHS, gbErr } from '../protocol.mjs';
++import { exportReport, latestReport } from '../report-html.mjs';
+ import { observe } from './observe.mjs';
+ import { verify, read } from './verify.mjs';
+ import { evalExpression, screenshotAction, waitFor, setViewport } from './extras.mjs';
+@@ -319,6 +320,18 @@ async function respondDialog(session, body) {
+ // ---- daemon entrypoint ------------------------------------------------------
+ 
+ /** Route one POST /sessions/:name/<verb> — all run through the session's serial queue. */
++/** Latest verify report for a session -> one self-contained HTML file. Disk only, no browser. */
++function exportSession(name, body = {}) {
++  const rp = latestReport(PATHS.sessions, name);
++  if (!rp) {
++    throw gbErr(CODES.BAD_REQUEST, `no verify report on disk for session '${name}'`, {
++      field: 'session',
++      correction_hint: 'run verify first — export reads the report verify writes',
++    });
++  }
++  return { ...exportReport(rp, { out: body.out || null }), from: rp };
++}
++
+ export async function handleAction(mgr, name, verb, body = {}) {
+   const s = mgr._get(name); // throws NO_SESSION
+   // M7: record an out-of-band event (a dev-server rebuild) in the session journal. Deliberately
+@@ -351,6 +364,10 @@ export async function handleAction(mgr, name, verb, body = {}) {
+   if (verb === 'wait') return mgr.runQueued(s, () => waitFor(s, body));
+   // D11 — resize an EXISTING session (theme×viewport matrices without re-opening + re-seeding).
+   if (verb === 'viewport') return mgr.runQueued(s, () => setViewport(s, body));
++  // Sandbox human channel: nobody can reach this box's loopback, so the report leaves as a file
++  // instead of a live screencast. Not queued — it touches disk, never the browser, so it works
++  // even while the session is paused at a breakpoint.
++  if (verb === 'export') return exportSession(name, body);
+   if (ALL_VERBS.has(verb)) return mgr.runQueued(s, () => runOne(s, verb, body));
+-  throw gbErr(CODES.BAD_REQUEST, `unknown action '${verb}'`, { field: 'verb', valid_values: [...ALL_VERBS, 'observe', 'verify', 'read', 'dialog', 'settle', 'eval', 'screenshot', 'wait', 'viewport', 'journal'] });
++  throw gbErr(CODES.BAD_REQUEST, `unknown action '${verb}'`, { field: 'verb', valid_values: [...ALL_VERBS, 'observe', 'verify', 'read', 'dialog', 'settle', 'eval', 'screenshot', 'wait', 'viewport', 'export', 'journal'] });
+ }
+diff --git a/src/daemon/daemon.mjs b/src/daemon/daemon.mjs
+index 0dca509..609b319 100644
+--- a/src/daemon/daemon.mjs
++++ b/src/daemon/daemon.mjs
+@@ -17,6 +17,7 @@ import { handleStyle } from './style.mjs';
+ import { handleWatchUpgrade } from './screencast.mjs';
+ import { gridPage, watchPage } from './watch-page.mjs';
+ import { sweepOrphans } from './prockit.mjs';
++import { probeEgress, describePlatform } from '../platform.mjs';
+ 
+ const TOKEN = crypto.randomBytes(32).toString('hex');
+ const START = Date.now();
+@@ -208,6 +209,14 @@ async function main() {
+   fs.mkdirSync(PATHS.root, { recursive: true });
+   fs.mkdirSync(PATHS.sessions, { recursive: true });
+ 
++  // Measure egress once, at startup, before any session exists. A verify report has to state
++  // whether outbound traffic was open or jailed, and the honest way to know is to check — an agent
++  // sandbox refuses everything outside its package-registry allowlist, and guessing that from
++  // environment variables would be a claim the instrument cannot back. Cached with a TTL; a
++  // failure to probe leaves the state 'jailed', which is the conservative answer (it demotes
++  // external failures to info rather than inventing defects).
++  await probeEgress({ cacheFile: PATHS.egressCache }).catch(() => {});
++
+   const mgr = createSessionManager({ idleTtlMs: IDLE_TTL, startTime: START });
+   const server = http.createServer((req, res) => handle(req, res, mgr));
+   server.on('clientError', (_e, sock) => sock.destroy());
+diff --git a/src/daemon/egress.mjs b/src/daemon/egress.mjs
+new file mode 100644
+index 0000000..950d86f
+--- /dev/null
++++ b/src/daemon/egress.mjs
+@@ -0,0 +1,114 @@
++// Egress classification — the fifth network bucket.
++//
++// An agent sandbox routes all outbound traffic through an allowlisting proxy: package registries
++// are permitted, everything else is refused. Measured on one such image: `example.com`,
++// `cdn.jsdelivr.net` and `fonts.googleapis.com` all return 403 to Node and curl, and surface
++// inside Chromium as `net::ERR_TUNNEL_CONNECTION_FAILED`.
++//
++// For a UI verifier this is not a nuisance, it is a correctness problem. The four existing buckets
++// (failed | httpError | hanging | mixedContent) exist to name real defects. Run a normal app in
++// that jail and every web font, every CDN script and every API call lands in `failed`, so verify
++// reports a wall of red that says nothing about the code — and, worse, real failures become
++// invisible inside the noise. The instrument would be lying in both directions at once.
++//
++// So a jailed platform gets a fifth bucket. A request is `sandboxBlocked` when it went to an
++// origin the sandbox cannot reach and failed the way the proxy fails things. It is NEVER counted
++// toward `ok`, because it is not a fact about the code under test — it would have succeeded on the
++// developer's machine.
++//
++// The rule is deliberately conservative in the one direction that matters: same-origin and
++// loopback requests are ALWAYS the app's, whatever they look like, so a broken local API can never
++// be excused as "the sandbox did it".
++
++/** Proxy-refusal signatures. A CONNECT that the proxy declines surfaces as one of these. */
++const PROXY_ERRORS = /ERR_(TUNNEL_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|SOCKS_CONNECTION_FAILED|MANDATORY_PROXY_CONFIGURATION_FAILED|NAME_NOT_RESOLVED|CERT_AUTHORITY_INVALID|BLOCKED_BY_CLIENT|CONNECTION_TIMED_OUT|CONNECTION_RESET|CONNECTION_REFUSED|ADDRESS_UNREACHABLE|INTERNET_DISCONNECTED)/i;
++
++const LOOPBACK = /^(localhost|127(\.\d+){3}|\[::1\]|::1|0\.0\.0\.0|host\.docker\.internal)$/i;
++
++export function hostOf(url) {
++  try { return new URL(url).hostname; } catch { return ''; }
++}
++
++export function originOf(url) {
++  try { const u = new URL(url); return `${u.protocol}//${u.host}`; } catch { return ''; }
++}
++
++/** Loopback and private ranges are the app under test, by definition — never the far side of a proxy. */
++export function isLocalHost(host) {
++  if (!host) return false;
++  if (LOOPBACK.test(host)) return true;
++  if (/^10\./.test(host)) return true;
++  if (/^192\.168\./.test(host)) return true;
++  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
++  return false;
++}
++
++/**
++ * Decide whether a failed request belongs to the app or to the jail.
++ *
++ * @param {object} r        the request record ({url, status, errorText, failed})
++ * @param {object} ctx      {policy:'open'|'jailed', origins:string[]}  origins = the app's own
++ *                          origins (page origin + baseURL), which are never demoted.
++ * @returns {'app'|'sandbox'}
++ */
++export function classifyEgress(r, ctx) {
++  if (!ctx || ctx.policy !== 'jailed') return 'app';
++  const host = hostOf(r.url);
++  if (!host) return 'app';
++  if (isLocalHost(host)) return 'app';
++  const origin = originOf(r.url);
++  if (ctx.origins && ctx.origins.includes(origin)) return 'app';
++
++  // A transport failure to an unreachable external origin under a jailed policy is the jail.
++  if (r.failed && PROXY_ERRORS.test(String(r.errorText || ''))) return 'sandbox';
++  // Some proxies answer the CONNECT and then refuse at the HTTP layer.
++  if (typeof r.status === 'number' && (r.status === 403 || r.status === 407)) return 'sandbox';
++  // Anything else — a real 404 from a reachable CDN, a 500 from a real API — is the app's problem.
++  return 'app';
++}
++
++/**
++ * Split an already-classified taxonomy, moving jail casualties out of `failed`/`httpError` into a
++ * fifth bucket. Returns the mutated taxonomy plus the extracted rows, so the on-disk report can
++ * keep every row (demoted, never deleted — the same contract `ignore404` already honours).
++ */
++export function splitEgress(net, ctx) {
++  if (!ctx || ctx.policy !== 'jailed') return { net, sandboxBlocked: [] };
++  const blocked = [];
++  const keepFailed = [];
++  for (const r of net.failed) {
++    if (classifyEgress({ ...r, failed: true }, ctx) === 'sandbox') blocked.push({ ...r, blockedBy: 'sandbox-egress' });
++    else keepFailed.push(r);
++  }
++  const keepHttp = [];
++  for (const r of net.httpError) {
++    if (classifyEgress(r, ctx) === 'sandbox') blocked.push({ ...r, blockedBy: 'sandbox-egress' });
++    else keepHttp.push(r);
++  }
++  net.failed = keepFailed;
++  net.httpError = keepHttp;
++  return { net, sandboxBlocked: blocked };
++}
++
++/**
++ * One info line, not a flood — the same noise discipline verify already applies to an open modal's
++ * backdrop and to allowlisted 404s. Names the distinct hosts so the reader can tell at a glance
++ * whether the blocked thing was a font CDN (cosmetic here, fine in production) or their own API
++ * (this run measured an app with no data in it, and every finding should be read that way).
++ */
++export function egressFinding(blocked) {
++  if (!blocked.length) return null;
++  const hosts = [...new Set(blocked.map((r) => hostOf(r.url)).filter(Boolean))];
++  const shown = hosts.slice(0, 6).join(', ');
++  const more = hosts.length > 6 ? ` +${hosts.length - 6} more` : '';
++  return {
++    channel: 'network',
++    severity: 'info',
++    portability: 'sandbox-artifact',
++    summary: `${blocked.length} external request${blocked.length === 1 ? '' : 's'} blocked by sandbox egress, not by your code: ${shown}${more}`,
++    detail: [
++      'These would resolve on a normal network. They are excluded from ok/counts.',
++      'If any of these is your own API or a font your layout depends on, this run measured a page that does not exist anywhere else — record a HAR on a networked machine and replay it with --har.',
++    ],
++  };
++}
+diff --git a/src/daemon/prockit-posix.mjs b/src/daemon/prockit-posix.mjs
+new file mode 100644
+index 0000000..614bffb
+--- /dev/null
++++ b/src/daemon/prockit-posix.mjs
+@@ -0,0 +1,159 @@
++// POSIX process helpers — the Linux/macOS twin of prockit-win32.mjs, same six exports, same
++// contract. Everything is read from /proc rather than shelled out to `ps`, so it works in a
++// stripped container image with no procps installed and costs no subprocess per query.
++//
++// Why this file has to exist at all: without it, every one of these functions returned [] or false
++// on Linux (powershell.exe throws), which meant the suite's opening `0 precondition clean` check
++// and its closing `zero strays` check both PASSED VACUOUSLY — a green run that had verified
++// nothing, while browsers leaked from one test to the next. A counter that says "clean" when it
++// means "I could not look" is the one thing an orphan check must never do (prockit-win32.mjs says
++// the same thing about a transient WMI failure); the Linux path was doing exactly that.
++import fs from 'node:fs';
++import { CHROME_MARKER, chromeDataDir } from '../platform.mjs';
++import { DAEMON_ENTRY } from '../protocol.mjs';
++
++const PROC = '/proc';
++
++/** Full command line of a PID, or '' if it can't be read (gone / not permitted). */
++export function commandLineFor(pid) {
++  try {
++    return fs.readFileSync(`${PROC}/${pid}/cmdline`, 'utf8').replace(/\0/g, ' ').trim();
++  } catch {
++    return '';
++  }
++}
++
++/** True only if PID is one of our daemon processes — the PID-reuse guard before any kill. */
++export function verifyGlassboxPid(pid) {
++  const cl = commandLineFor(pid);
++  // Match the RESOLVED daemon entry path, not the loose string 'glassbox': a repo checked out to
++  // any other directory name would otherwise never verify, and an unverifiable PID is never killed
++  // — so kill-all would quietly stop reaping anything at all.
++  return cl.includes(DAEMON_ENTRY) || (cl.toLowerCase().includes('daemon.mjs') && cl.toLowerCase().includes(CHROME_MARKER));
++}
++
++/**
++ * A ZOMBIE IS NOT ALIVE. `process.kill(pid, 0)` succeeds on a zombie — the process is dead and its
++ * exit status is simply waiting to be collected — so the naive check reports a killed process as
++ * running. In a container whose PID 1 is not a reaping init, an orphaned child stays a zombie
++ * indefinitely, and every "is the tree down yet?" loop spins to its timeout and then reports a leak
++ * that does not exist. Read the state field instead of trusting the signal.
++ */
++export function processAlive(pid) {
++  try {
++    process.kill(pid, 0);
++  } catch (e) {
++    if (e.code !== 'EPERM') return false; // ESRCH: gone. EPERM: exists but not ours to signal.
++    return true;
++  }
++  return !isZombie(pid);
++}
++
++function isZombie(pid) {
++  try {
++    const stat = fs.readFileSync(`${PROC}/${pid}/stat`, 'utf8');
++    return stat.slice(stat.lastIndexOf(')') + 2)[0] === 'Z';
++  } catch {
++    return false; // unreadable: assume alive rather than invent a death
++  }
++}
++
++/** Numeric PID directory names under /proc, or [] if /proc is unreadable. */
++function pids() {
++  try {
++    return fs.readdirSync(PROC).filter((d) => /^\d+$/.test(d)).map(Number);
++  } catch {
++    return [];
++  }
++}
++
++/** Parent PID from /proc/<pid>/stat, or 0. The comm field can contain spaces AND parens, so the
++ *  only safe split is after the LAST ')'. */
++function ppidOf(pid) {
++  try {
++    const stat = fs.readFileSync(`${PROC}/${pid}/stat`, 'utf8');
++    const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
++    return Number(rest[1]) || 0; // state, ppid, ...
++  } catch {
++    return 0;
++  }
++}
++
++/**
++ * Kill a PID and every descendant. Windows gets this from `taskkill /T`; here we walk /proc for
++ * the tree, kill leaves first so a parent cannot re-parent its children away mid-sweep, then try
++ * the process group as a backstop (glassbox spawns detached, so a daemon is its own group leader
++ * and one negative-PID kill catches anything the walk missed). Name kept from the win32 twin so
++ * every call site stays identical.
++ */
++export function taskkillTree(pid) {
++  const target = Number(pid);
++  if (!Number.isInteger(target) || target <= 1) return false;
++
++  const all = pids();
++  const parent = new Map(all.map((p) => [p, ppidOf(p)]));
++  const kids = new Map();
++  for (const [p, pp] of parent) {
++    if (!kids.has(pp)) kids.set(pp, []);
++    kids.get(pp).push(p);
++  }
++  const tree = [];
++  const stack = [target];
++  const seen = new Set([target]);
++  while (stack.length) {
++    const p = stack.pop();
++    tree.push(p);
++    for (const k of kids.get(p) || []) if (!seen.has(k)) { seen.add(k); stack.push(k); }
++  }
++
++  let killedAny = false;
++  for (const p of tree.reverse()) {          // leaves first
++    try { process.kill(p, 'SIGKILL'); killedAny = true; } catch { /* already gone */ }
++  }
++  try { process.kill(-target, 'SIGKILL'); killedAny = true; } catch { /* not a group leader */ }
++  return killedAny;
++}
++
++/** Every PID whose command line matches a predicate. One /proc pass, no subprocesses. */
++function scan(match) {
++  const out = [];
++  for (const pid of pids()) {
++    const cl = commandLineFor(pid);
++    if (cl && match(cl.toLowerCase(), cl)) out.push(pid);
++  }
++  return out;
++}
++
++/**
++ * PIDs of every chromium (main + children) launched by glassbox, found via the --user-data-dir
++ * marker — never a bare PID, never a bare process name (this box may well be running a chromium
++ * that is nothing to do with us).
++ */
++export function listGlassboxChromium() {
++  const udd = chromeDataDir();
++  return scan((lc, raw) =>
++    (lc.includes('chrome') || lc.includes('chromium') || lc.includes('headless_shell')) &&
++    (raw.includes(udd) || (lc.includes(CHROME_MARKER) && lc.includes('chrome-data')))
++  );
++}
++
++/**
++ * PIDs of every glassbox DAEMON process. The discovery file names one daemon; a daemon whose file
++ * was already removed (a kill-all that raced a starting daemon) is invisible to it and keeps
++ * holding a browser — which is how a "clean" precondition finds chromium processes it cannot
++ * explain. Excludes the caller so a CLI sweep cannot reap itself.
++ */
++export function listGlassboxDaemons() {
++  const self = process.pid;
++  return scan((lc, raw) => raw.includes(DAEMON_ENTRY) || (lc.includes('daemon.mjs') && lc.includes(CHROME_MARKER)))
++    .filter((p) => p !== self);
++}
++
++/** Reap every glassbox chromium stray. Returns the count found before killing. */
++export function sweepOrphans() {
++  const list = listGlassboxChromium();
++  // Chromium's own children share the marker (they inherit the cmdline), so killing the tree of
++  // the first PID usually takes the rest with it; kill them all anyway and let ESRCH be silent.
++  for (const pid of list) taskkillTree(pid);
++  return list.length;
++}
+diff --git a/src/daemon/prockit-win32.mjs b/src/daemon/prockit-win32.mjs
+new file mode 100644
+index 0000000..15be33c
+--- /dev/null
++++ b/src/daemon/prockit-win32.mjs
+@@ -0,0 +1,103 @@
++// Windows process helpers shared by the daemon (startup orphan sweep) and the CLI
++// (kill-all reaper). PID-reuse-safe: we never kill a PID without first confirming its
++// command line is ours. Chromium strays are found by the --user-data-dir marker, per
++// research 07 §5 (taskkill /T /F is the field-tested recipe; no Job Objects for v1).
++import { execFileSync } from 'node:child_process';
++import { CHROME_MARKER, chromeDataDir } from '../platform.mjs';
++
++function ps(script) {
++  return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
++    encoding: 'utf8',
++    timeout: 15000,
++  });
++}
++
++/** Full command line of a PID, or '' if it can't be read (gone / access denied). */
++export function commandLineFor(pid) {
++  try {
++    return ps(`(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`).trim();
++  } catch {
++    return '';
++  }
++}
++
++/** True only if PID is one of our daemon processes — the PID-reuse guard before any kill. */
++export function verifyGlassboxPid(pid) {
++  const cl = commandLineFor(pid).toLowerCase();
++  return cl.includes('daemon.mjs') && cl.includes(CHROME_MARKER);
++}
++
++export function processAlive(pid) {
++  try {
++    process.kill(pid, 0);
++    return true;
++  } catch (e) {
++    return e.code === 'EPERM'; // exists but not signalable
++  }
++}
++
++/** taskkill the whole tree of a PID. Returns true on success. */
++export function taskkillTree(pid) {
++  try {
++    execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 15000 });
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++/**
++ * PIDs of every chromium (main + children) launched by glassbox, found via cmdline marker.
++ * The query is retried once: a WMI call can fail transiently — most likely exactly while eight
++ * chromium processes are tearing down — and the failure path returns the reassuring answer, zero.
++ * A counter that says "clean" when it means "I could not look" is the one thing an orphan check
++ * must never do.
++ */
++export function listGlassboxChromium() {
++  const filter = "Name='chrome.exe' OR Name='headless_shell.exe'";
++  // The literal chrome-data path, not the loose 'glassbox' string: a custom GLASSBOX_HOME (which
++  // the test suite sets, so a run never reaps a developer's live sessions) does not have to contain
++  // the word glassbox, and a reaper that matches nothing reports a reassuring, wrong zero.
++  const like = `*${chromeDataDir().replace(/'/g, "''")}*`;
++  const query = () => ps(
++    `Get-CimInstance Win32_Process -Filter "${filter}" | ` +
++      `Where-Object { $_.CommandLine -like '${like}' } | ` +
++      `ForEach-Object { $_.ProcessId }`
++  );
++  let out;
++  try { out = query(); } catch { try { out = query(); } catch { return []; } }
++  return out
++    .split(/\r?\n/)
++    .map((s) => Number(s.trim()))
++    .filter((n) => Number.isInteger(n) && n > 0);
++}
++
++/**
++ * PIDs of every glassbox DAEMON process, found the same way chromium strays are: by command line,
++ * never by a bare PID. The discovery file names one daemon; a daemon whose file was already
++ * removed (a kill-all that raced a starting daemon) is invisible to it and keeps holding a browser
++ * — which is how a "clean" precondition check finds seven chromium processes it cannot explain.
++ */
++export function listGlassboxDaemons() {
++  const like = `*${CHROME_MARKER}*daemon.mjs*`;
++  try {
++    const out = ps(
++      `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ` +
++        `Where-Object { $_.CommandLine -like '${like}' } | ` +
++        `ForEach-Object { $_.ProcessId }`
++    );
++    return out
++      .split(/\r?\n/)
++      .map((s) => Number(s.trim()))
++      .filter((n) => Number.isInteger(n) && n > 0);
++  } catch {
++    return [];
++  }
++}
++
++/** Reap every glassbox chromium stray. Returns the count found before killing. */
++export function sweepOrphans() {
++  const pids = listGlassboxChromium();
++  for (const pid of pids) taskkillTree(pid);
++  return pids.length;
++}
+diff --git a/src/daemon/prockit.mjs b/src/daemon/prockit.mjs
+index f8c2f35..a327a65 100644
+--- a/src/daemon/prockit.mjs
++++ b/src/daemon/prockit.mjs
+@@ -1,100 +1,24 @@
+-// Windows process helpers shared by the daemon (startup orphan sweep) and the CLI
+-// (kill-all reaper). PID-reuse-safe: we never kill a PID without first confirming its
+-// command line is ours. Chromium strays are found by the --user-data-dir marker, per
+-// research 07 §5 (taskkill /T /F is the field-tested recipe; no Job Objects for v1).
+-import { execFileSync } from 'node:child_process';
+-import { CHROME_MARKER } from '../protocol.mjs';
+-
+-function ps(script) {
+-  return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+-    encoding: 'utf8',
+-    timeout: 15000,
+-  });
+-}
+-
+-/** Full command line of a PID, or '' if it can't be read (gone / access denied). */
+-export function commandLineFor(pid) {
+-  try {
+-    return ps(`(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`).trim();
+-  } catch {
+-    return '';
+-  }
+-}
+-
+-/** True only if PID is one of our daemon processes — the PID-reuse guard before any kill. */
+-export function verifyGlassboxPid(pid) {
+-  const cl = commandLineFor(pid).toLowerCase();
+-  return cl.includes('daemon.mjs') && cl.includes(CHROME_MARKER);
+-}
+-
+-export function processAlive(pid) {
+-  try {
+-    process.kill(pid, 0);
+-    return true;
+-  } catch (e) {
+-    return e.code === 'EPERM'; // exists but not signalable
+-  }
+-}
+-
+-/** taskkill the whole tree of a PID. Returns true on success. */
+-export function taskkillTree(pid) {
+-  try {
+-    execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', timeout: 15000 });
+-    return true;
+-  } catch {
+-    return false;
+-  }
+-}
+-
+-/**
+- * PIDs of every chromium (main + children) launched by glassbox, found via cmdline marker.
+- * The query is retried once: a WMI call can fail transiently — most likely exactly while eight
+- * chromium processes are tearing down — and the failure path returns the reassuring answer, zero.
+- * A counter that says "clean" when it means "I could not look" is the one thing an orphan check
+- * must never do.
+- */
+-export function listGlassboxChromium() {
+-  const filter = "Name='chrome.exe' OR Name='headless_shell.exe'";
+-  const like = `*${CHROME_MARKER}*chrome-data*`;
+-  const query = () => ps(
+-    `Get-CimInstance Win32_Process -Filter "${filter}" | ` +
+-      `Where-Object { $_.CommandLine -like '${like}' } | ` +
+-      `ForEach-Object { $_.ProcessId }`
+-  );
+-  let out;
+-  try { out = query(); } catch { try { out = query(); } catch { return []; } }
+-  return out
+-    .split(/\r?\n/)
+-    .map((s) => Number(s.trim()))
+-    .filter((n) => Number.isInteger(n) && n > 0);
+-}
+-
+-/**
+- * PIDs of every glassbox DAEMON process, found the same way chromium strays are: by command line,
+- * never by a bare PID. The discovery file names one daemon; a daemon whose file was already
+- * removed (a kill-all that raced a starting daemon) is invisible to it and keeps holding a browser
+- * — which is how a "clean" precondition check finds seven chromium processes it cannot explain.
+- */
+-export function listGlassboxDaemons() {
+-  const like = `*${CHROME_MARKER}*daemon.mjs*`;
+-  try {
+-    const out = ps(
+-      `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ` +
+-        `Where-Object { $_.CommandLine -like '${like}' } | ` +
+-        `ForEach-Object { $_.ProcessId }`
+-    );
+-    return out
+-      .split(/\r?\n/)
+-      .map((s) => Number(s.trim()))
+-      .filter((n) => Number.isInteger(n) && n > 0);
+-  } catch {
+-    return [];
+-  }
+-}
+-
+-/** Reap every glassbox chromium stray. Returns the count found before killing. */
+-export function sweepOrphans() {
+-  const pids = listGlassboxChromium();
+-  for (const pid of pids) taskkillTree(pid);
+-  return pids.length;
+-}
++// Process helpers — platform dispatch only. Both implementations export the same six functions
++// with the same contract, so every call site (daemon startup sweep, CLI kill-all, dev-loop reaper,
++// and the whole test suite's stray checks) imports this file and never learns which OS it is on.
++//
++// The contract, identical on both sides:
++//   commandLineFor(pid)     → string ('' if unreadable — gone, or not permitted)
++//   verifyGlassboxPid(pid)  → boolean, the PID-reuse guard that must pass before any kill
++//   processAlive(pid)       → boolean
++//   taskkillTree(pid)       → boolean, kills the PID and every descendant
++//   listGlassboxChromium()  → PIDs of our chromiums, matched on the --user-data-dir marker
++//   listGlassboxDaemons()   → PIDs of our daemons, matched on cmdline
++//   sweepOrphans()          → count found, then killed
++import * as win32 from './prockit-win32.mjs';
++import * as posix from './prockit-posix.mjs';
++
++const impl = process.platform === 'win32' ? win32 : posix;
++
++export const commandLineFor = impl.commandLineFor;
++export const verifyGlassboxPid = impl.verifyGlassboxPid;
++export const processAlive = impl.processAlive;
++export const taskkillTree = impl.taskkillTree;
++export const listGlassboxChromium = impl.listGlassboxChromium;
++export const listGlassboxDaemons = impl.listGlassboxDaemons;
++export const sweepOrphans = impl.sweepOrphans;
+diff --git a/src/daemon/sessions.mjs b/src/daemon/sessions.mjs
+index e33b6cf..2ad083e 100644
+--- a/src/daemon/sessions.mjs
++++ b/src/daemon/sessions.mjs
+@@ -8,8 +8,10 @@ import fs from 'node:fs';
+ import path from 'node:path';
+ import { chromium } from 'playwright';
+ import { PATHS, CODES, ANON_CLIENT, gbErr } from '../protocol.mjs';
++import { launchOptions, ensureDisplay, defaultHeaded, describePlatform, IS_SANDBOX } from '../platform.mjs';
+ import { createJournal } from './journal.mjs';
+ import { createConsoleBuffer, createNetworkTracker } from './buffers.mjs';
++import { installStubs, recordOptions, fontState } from './stubs.mjs';
+ 
+ const NAME_RE = /^[\w.-]{1,64}$/;
+ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+@@ -68,6 +70,7 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
+   const persistent = { headless: null, headed: null };
+   const launching = { headless: null, headed: null };
+   const cdpEndpoint = { headless: null, headed: null }; // {port, browserWs} per mode, or null
++  let displayInfo = { display: 'headless' }; // what ensureDisplay actually gave us, for conditions
+ 
+   async function ensureBrowser(headed) {
+     const key = headed ? 'headed' : 'headless';
+@@ -75,11 +78,25 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
+     if (!launching[key]) {
+       const udd = path.join(PATHS.chromeData, key);
+       fs.mkdirSync(udd, { recursive: true });
++      // Launch options come from the platform seam and NOWHERE else (platform.mjs §2). On Windows
++      // that is still `channel:'chromium'`; in a container it resolves a Chromium by path, because
++      // playwright pins a browser revision per release and an image shipping a different one makes
++      // channel-resolution fail with "run playwright install" — which a package-registry-only
++      // egress allowlist cannot do.
++      displayInfo = ensureDisplay(headed);
++      const launchOpts = launchOptions({ headed: displayInfo.display !== 'headless' });
+       launching[key] = chromium
+-        .launchPersistentContext(udd, { channel: 'chromium', headless: !headed, args: ['--remote-debugging-port=0'] })
++        .launchPersistentContext(udd, launchOpts)
+         .then(async (ctx) => {
+           persistent[key] = ctx;
+-          for (const p of ctx.pages()) p.close().catch(() => {}); // drop the default about:blank tab
++          // Drop the default about:blank tab — but NEVER the last one in headed mode. A headed
++          // Chromium exits when its final window closes, and a persistent context's default page
++          // IS that window: closing it takes the whole browser with it, and the next newContext
++          // fails with "Target page, context or browser has been closed". Headless has no window
++          // to lose, which is why this never showed up until headed became the sandbox default.
++          const pages = ctx.pages();
++          const keepOne = headed;
++          for (const p of pages.slice(keepOne ? 1 : 0)) p.close().catch(() => {});
+           cdpEndpoint[key] = await readCdpEndpoint(udd); // best-effort; null if the file never appears
+           return ctx;
+         })
+@@ -156,7 +173,13 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
+       // WHOSE session this is. One machine-wide daemon serves every agent, so without this a
+       // destroy verb cannot tell "clean up after me" from "take down everyone else too" (D12).
+       client: String(opts.client || ANON_CLIENT).slice(0, 64),
+-      headed: !!opts.headed,
++      // Headed is the SANDBOX default and headless the local one — deliberately inverted from
++      // every other container browser setup. Measured on an agent container image: headless
++      // Chromium reports a 0px scrollbar (overlay scrollbars), headed-under-Xvfb reports the same
++      // 15px reserved gutter Windows Chrome does. A 0px scrollbar silently hides the whole
++      // `100vw`-overflow and right-edge-clipping bug class, which is precisely what the layout
++      // audit exists to catch. `--headless` (or GLASSBOX_HEADLESS=1) opts back out.
++      headed: opts.headless ? false : (opts.headed === undefined ? defaultHeaded() : !!opts.headed),
+       seq: 0,
+       busy: false,
+       queue: Promise.resolve(),
+@@ -169,7 +192,22 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
+       if (opts.viewport) ctxOpts.viewport = opts.viewport;
+       if (opts.colorScheme) ctxOpts.colorScheme = opts.colorScheme;
+       if (opts.baseUrl) ctxOpts.baseURL = opts.baseUrl;
++      // A container inherits UTC and an unset locale; a page that formats a date or a number then
++      // renders differently here than on the developer's machine for reasons that have nothing to
++      // do with their code. Pin both so the difference is a stated condition, not a surprise.
++      if (IS_SANDBOX) {
++        ctxOpts.timezoneId = opts.timezone || process.env.GLASSBOX_TZ || 'America/Los_Angeles';
++        ctxOpts.locale = opts.locale || process.env.GLASSBOX_LOCALE || 'en-US';
++      } else {
++        if (opts.timezone) ctxOpts.timezoneId = opts.timezone;
++        if (opts.locale) ctxOpts.locale = opts.locale;
++      }
++      Object.assign(ctxOpts, recordOptions(opts) || {});
+       rec.context = await browser.newContext(ctxOpts);
++      // Routes must be installed on the CONTEXT, before any navigation: it is the only hook that
++      // survives newPage, popups and navigations (a page-scoped CDP session dies with the tab).
++      rec.stubs = await installStubs(rec.context, opts);
++      rec.recordHar = opts.recordHar ? String(opts.recordHar) : null;
+       rec.page = await rec.context.newPage();
+       rec.cdp = await rec.context.newCDPSession(rec.page);
+       // The page target's id is stable for the tab's life (survives navigations) — cache it so the
+@@ -186,6 +224,12 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
+       rec.observe = { version: 0, navSeq: 0, navSeqAt: 0, registry: new Map() };
+       // M3 theme-sweep plumbing: colorScheme rode into newContext above; themeAttr (e.g.
+       // 'data-theme') is the site's own theme mechanism verify drives alongside emulateMedia.
++      rec.baseUrl = opts.baseUrl || null;
++      rec._tz = ctxOpts.timezoneId || null;
++      // Bound accessors so verify (which only ever holds a session record, never the manager) can
++      // ask what conditions it is measuring under and which origins are exempt from egress demotion.
++      rec.conditionsFn = (extra) => conditions(rec, extra);
++      rec.egressCtxFn = () => egressCtx(rec);
+       rec.colorScheme = opts.colorScheme || null;
+       rec.themeAttr = opts.themeAttr || null;
+       // themeClass is themeAttr's sibling for the OTHER dominant mechanism: Tailwind's
+@@ -260,9 +304,51 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
+       idleMs: Date.now() - s.lastTouch,
+       daemon: identity(),
+       cdp: cdpBlock(s), // browser/target ws + DevTools link (null if no debug port)
++      conditions: conditions(s),
++    };
++  }
++
++  /**
++   * The conditions a measurement was taken under. Every verify report carries this, because a
++   * finding without its conditions is a claim the instrument cannot support: "0 errors" measured
++   * with no fonts, no network and a software rasterizer is a different sentence from "0 errors" on
++   * the developer's machine, and only one of them is about their code.
++   */
++  function conditions(s, { fontEvidence = 0 } = {}) {
++    const plat = describePlatform();
++    const jailed = plat.egress === 'jailed';
++    return {
++      platform: plat.kind,
++      detectedBy: plat.detectedBy,
++      display: s?.headed ? displayInfo.display : 'headless',
++      browser: plat.browserPath,
++      raster: plat.raster,
++      egress: plat.egress,
++      fonts: fontState({ jailed, stubs: s?.stubs, evidence: fontEvidence }),
++      stubs: s?.stubs || null,
++      recordingHar: s?.recordHar || null,
++      viewport: s ? s.page.viewportSize() : null,
++      colorScheme: s?.colorScheme || 'light',
++      timezone: IS_SANDBOX ? (s?._tz || 'America/Los_Angeles') : 'system',
++      humanChannel: plat.humanChannel,
+     };
+   }
+ 
++  /** The app's own origins — never demoted to "the sandbox blocked it" (see egress.mjs). */
++  function appOrigins(s) {
++    const out = new Set();
++    for (const u of [s.page.url(), s.baseUrl]) {
++      if (!u) continue;
++      try { const p = new URL(u); out.add(`${p.protocol}//${p.host}`); } catch { /* about:blank */ }
++    }
++    return [...out];
++  }
++
++  /** The context an egress classification needs: policy + the origins that are exempt from it. */
++  function egressCtx(s) {
++    return { policy: describePlatform().egress === 'jailed' ? 'jailed' : 'open', origins: appOrigins(s) };
++  }
++
+   /** Just the CDP endpoint block for a session (used by the watch page's DevTools link). */
+   function cdpInfo(name) {
+     return cdpBlock(get(name));
+@@ -385,6 +471,8 @@ export function createSessionManager({ idleTtlMs = 30 * 60 * 1000, startTime = D
+     create,
+     list,
+     info,
++    conditions,
++    egressCtx,
+     cdpInfo,
+     destroy,
+     destroyMine,
+diff --git a/src/daemon/stubs.mjs b/src/daemon/stubs.mjs
+new file mode 100644
+index 0000000..5de8d4c
+--- /dev/null
++++ b/src/daemon/stubs.mjs
+@@ -0,0 +1,95 @@
++// The HAR fidelity bridge — the piece that makes the two Glassboxes one system rather than two
++// tools.
++//
++// The problem it solves: a sandboxed browser cannot reach the internet, so it renders your page
++// with no web fonts, no CDN scripts and no API responses. Fonts are the sharp end. Every
++// text-metric measurement the layout audit makes — horizontal overflow, occlusion, clipping,
++// font-driven CLS — is computed against whatever fallback face the container happened to have.
++// The container here has Liberation and DejaVu and no Segoe UI, Inter or Roboto at all, so
++// `font-family: system-ui` resolves to something the developer has never seen. Those findings are
++// then measurements of a page that exists nowhere.
++//
++// The fix is not to install fonts (you cannot guess which) or to whitelist hosts (you cannot reach
++// them). It is to carry the real responses in with the code:
++//
++//     on a networked machine:  glassbox session open x --record-har run.har   … --> run.har
++//     in the sandbox:          glassbox session open x --har run.har
++//
++// One artifact fixes three things at once — egress (the requests resolve), fonts (a HAR embeds the
++// font payloads, so the real faces load and text metrics become real), and determinism (the same
++// bytes every run, so a finding that moves is the code moving).
++import fs from 'node:fs';
++import { CODES, gbErr } from '../protocol.mjs';
++
++/**
++ * @param {import('playwright').BrowserContext} context
++ * @param {object} opts
++ *   har        path to a HAR to replay
++ *   harNotFound 'fallback' (default) — unmatched requests go to the real network, which is what
++ *               you want when the dev server is local and only third parties are missing — or
++ *               'abort', for a fully hermetic run where any unrecorded request is itself a finding.
++ *   harUrl     optional glob; only matching URLs are served from the HAR.
++ * @returns {Promise<object|null>} a descriptor for the conditions block, or null if nothing installed
++ */
++export async function installStubs(context, opts = {}) {
++  if (!opts.har) return null;
++  const har = String(opts.har);
++  if (!fs.existsSync(har)) {
++    throw gbErr(CODES.BAD_REQUEST, `har file not found: ${har}`, {
++      field: 'har',
++      correction_hint: 'record one first on a networked machine: glassbox session open <name> --record-har <path>',
++    });
++  }
++  const notFound = opts.harNotFound === 'abort' ? 'abort' : 'fallback';
++  const routeOpts = { notFound, update: false };
++  if (opts.harUrl) routeOpts.url = opts.harUrl;
++  await context.routeFromHAR(har, routeOpts);
++
++  let entries = 0;
++  let fonts = 0;
++  try {
++    const parsed = JSON.parse(fs.readFileSync(har, 'utf8'));
++    const list = parsed?.log?.entries || [];
++    entries = list.length;
++    fonts = list.filter((e) => /font|woff/i.test(e?.response?.content?.mimeType || '') || /\.(woff2?|ttf|otf)(\?|$)/i.test(e?.request?.url || '')).length;
++  } catch { /* a HAR we can't parse can still be replayed by playwright; don't fail the session for stats */ }
++
++  return { har, notFound, url: opts.harUrl || '**', entries, fonts };
++}
++
++/**
++ * Context options for the RECORDING side. Must be passed at newContext time — playwright writes
++ * the file on context.close(), so a session recording a HAR has to be closed cleanly (kill -9 on
++ * the daemon loses the recording, which is why `session close` is the documented end of a record).
++ */
++export function recordOptions(opts = {}) {
++  if (!opts.recordHar) return null;
++  return {
++    // 'embed' inlines response bodies — including font binaries, which is the entire point.
++    recordHar: { path: String(opts.recordHar), content: 'embed', mode: 'full' },
++  };
++}
++
++/**
++ * Fonts are the reason this bridge exists, so the conditions block says which state a run was in
++ * rather than leaving the reader to infer it.
++ *
++ * `substituted` is asserted on EVIDENCE, never on the mere fact of being in a container. A page
++ * that ships no web fonts loses nothing to a jailed network, and telling its author that "web fonts
++ * did not load" would be a false warning — which is the same sin as a false all-clear, just
++ * pointing the other way. `evidence` is the count of font/stylesheet requests the jail actually
++ * ate, plus any FontFace the browser reports as failed.
++ */
++export function fontState({ jailed, stubs, evidence = 0 }) {
++  if (stubs && stubs.fonts > 0) return 'har-replayed';
++  if (!jailed) return 'system';
++  return evidence > 0 ? 'substituted' : 'local-only';
++}
++
++/** Requests the jail ate that a typeface depended on. Stylesheets count: a blocked Google Fonts
++ *  CSS file means the @font-face rules never existed, so no font request is ever even attempted. */
++export function blockedFontEvidence(blocked = []) {
++  return blocked.filter((r) =>
++    r.type === 'Font' || r.type === 'Stylesheet' || /\.(woff2?|ttf|otf|eot)(\?|$)/i.test(r.url || '') || /fonts\.(googleapis|gstatic)\.com|use\.typekit|fonts\.bunny\.net/i.test(r.url || '')
++  ).length;
++}
+diff --git a/src/daemon/verify.mjs b/src/daemon/verify.mjs
+index 0b133c8..01b997a 100644
+--- a/src/daemon/verify.mjs
++++ b/src/daemon/verify.mjs
+@@ -13,6 +13,8 @@ import { settle } from './settle.mjs';
+ import { layoutAuditSource } from './layout-audit.mjs';
+ import { readOverlay } from './overlay-reader.mjs';
+ import { sourceMapper } from './sourcemaps.mjs';
++import { splitEgress, egressFinding } from './egress.mjs';
++import { blockedFontEvidence } from './stubs.mjs';
+ 
+ const DEFAULT_VIEWPORTS = [{ w: 390, h: 844, label: 'mobile' }, { w: 1280, h: 800, label: 'desktop' }];
+ const LAYOUT_CATS = ['overflow', 'occlusion', 'invisible', 'zeroSize', 'brokenImages', 'contrast', 'cls'];
+@@ -156,7 +158,32 @@ function netFinding(kind, list, severity) {
+ }
+ function layoutFinding(f, combo) {
+   const label = { overflow: 'Horizontal overflow', occlusion: 'Occluded interactive element', invisible: 'Invisible interactive element', zeroSize: 'Zero-size click target', brokenImage: 'Broken image', contrast: 'Low text contrast', cls: 'Layout shift (CLS)' }[f.type] || f.type;
+-  return { channel: 'layout', severity: 'warn', summary: `${label}: ${f.desc}${combo ? ` [${combo}]` : ''} — ${f.detail}`, selector: f.desc, ...(combo ? { combo } : {}) };
++  // `type` is carried through so the portability tagger can tell a text-metric measurement from a
++  // computed-value one; the two do not survive a change of environment equally.
++  return { channel: 'layout', severity: 'warn', type: f.type, summary: `${label}: ${f.desc}${combo ? ` [${combo}]` : ''} — ${f.detail}`, selector: f.desc, ...(combo ? { combo } : {}) };
++}
++
++// ---- portability: does this finding survive the environment it was measured in? ---------------
++//
++// The honest partition, from measurements on an agent container image. Some checks are computed
++// from values the browser was GIVEN (CSS colours, the cascade, the DOM, HTTP status) and mean the
++// same thing anywhere. Others are measured off RENDERED TEXT — where the line wrapped, what
++// overlapped what, how much the layout shifted — and a container with no web fonts and no Segoe UI
++// renders text at different widths than the developer's machine, so those findings are about a
++// page that exists nowhere else.
++//
++// Neither kind is dropped. They are LABELLED, because a reader who knows which is which can act on
++// both, and a reader told nothing will trust the wrong half.
++const FONT_DEPENDENT = new Set(['overflow', 'occlusion', 'zeroSize', 'cls', 'invisible']);
++
++function tagPortability(findings, cond) {
++  const fontsAreReal = !cond || cond.fonts !== 'substituted';
++  for (const f of findings) {
++    if (f.portability) continue;                       // egress finding tags itself
++    if (f.channel === 'layout' && FONT_DEPENDENT.has(f.type) && !fontsAreReal) f.portability = 'font-dependent';
++    else f.portability = 'portable';
++  }
++  return findings;
+ }
+ 
+ // ---- load state: cold vs warm (defect W3) -----------------------------------
+@@ -273,13 +300,28 @@ export async function verify(session, opts = {}) {
+     }
+     net.httpError = keep;
+   }
++
++  // The fifth bucket. Under a jailed egress policy, a failed request to an external origin is the
++  // sandbox's doing, not the code's — see egress.mjs for why that has to be split out rather than
++  // reported as a defect. Same contract as the 404 allowlist: demoted, never deleted, and only
++  // when the evidence actually says "proxy refused".
++  const { sandboxBlocked } = splitEgress(net, session.egressCtxFn ? session.egressCtxFn() : { policy: 'open' });
++
+   // The browser also logs a console error for each of those 404s ("Failed to load resource: …404"),
+   // located AT the resource URL. Demote exactly those — matched by URL against the rows we just
+   // demoted, so a 500 on the same path keeps its console error.
++  // A blocked external request produces the same paired console error ("Failed to load resource:
++  // net::ERR_TUNNEL_CONNECTION_FAILED"), so it gets the same treatment — but into its OWN bucket,
++  // because `ignored404` counts an allowlist the caller wrote and `blockedConsole` counts an
++  // environment they did not choose. Collapsing the two would mislabel the report.
+   const ignoredUrls = new Set(ignored404.map((r) => r.url));
+-  const consoleErrs = [], ignoredConsole = [];
++  const blockedUrls = new Set(sandboxBlocked.map((r) => r.url));
++  const consoleErrs = [], ignoredConsole = [], blockedConsole = [];
+   for (const e of allConsoleErrs) {
+-    const isResourceErr = /failed to load resource/i.test(e.text || '') && [...ignoredUrls].some((u) => (e.loc || '').startsWith(u));
++    const isResource = /failed to load resource/i.test(e.text || '');
++    const at = (u) => (e.loc || '').startsWith(u);
++    if (isResource && [...blockedUrls].some(at)) { blockedConsole.push(e); continue; }
++    const isResourceErr = isResource && [...ignoredUrls].some(at);
+     if (isResourceErr) ignoredConsole.push(e); else consoleErrs.push(e);
+   }
+ 
+@@ -393,6 +435,10 @@ export async function verify(session, opts = {}) {
+   }
+   for (const g of axeGroups) findings.push({ channel: 'a11y', severity: g.impact === 'critical' || g.impact === 'serious' ? 'warn' : 'info', summary: `${g.help} (${g.count}×): ${g.sample}`, selector: g.sample, detail: `rule ${g.ruleId} (${g.impact})` });
+ 
++  // Sandbox egress: one collapsed info line naming the hosts, never a per-request flood.
++  const egressInfo = egressFinding(sandboxBlocked);
++  if (egressInfo) findings.push(egressInfo);
++
+   // The load-state caveat goes LAST among the warns (stable sort): it qualifies the whole report
+   // rather than naming a defect, but it must be impossible to miss (defect W3c).
+   const navigation = navState(session, coldRun);
+@@ -404,6 +450,34 @@ export async function verify(session, opts = {}) {
+     });
+   }
+ 
++  // ---- conditions: what this measurement was taken under -----------------------------------
++  // The W3 lesson generalised. A warm load quietly loses first-load findings, so every report says
++  // cold-or-warm. The same argument applies with more force to the environment itself: a run with
++  // substituted fonts, no outbound network and a software rasterizer can produce a clean report
++  // about a page the developer would not recognise. State it, every time, in the report and in the
++  // compact result — not in documentation the reader has to remember.
++  // Font evidence: requests the jail actually ate that a typeface depended on, plus any FontFace
++  // the browser itself reports as failed. Asserting "fonts were substituted" without this would
++  // fire on every page in a container, including the many that ship no web fonts at all.
++  let failedFaces = 0;
++  try {
++    failedFaces = await page.evaluate('(()=>{try{let n=0;document.fonts.forEach(f=>{if(f.status==="error")n++});return n}catch{return 0}})()');
++  } catch { /* a paused or navigating page owes us nothing here */ }
++  const fontEvidence = blockedFontEvidence(sandboxBlocked) + (Number(failedFaces) || 0);
++  const conditions = { ...(session.conditionsFn ? session.conditionsFn({ fontEvidence }) : {}), load: null };
++
++  if (conditions.fonts === 'substituted') {
++    const fontDependent = findings.filter((f) => f.channel === 'layout' && FONT_DEPENDENT.has(f.type)).length;
++    findings.push({
++      channel: 'navigation', severity: fontDependent ? 'warn' : 'info',
++      portability: 'sandbox-artifact',
++      summary: fontDependent
++        ? `Web fonts did not load (sandbox egress) — ${fontDependent} text-metric finding${fontDependent > 1 ? 's are' : ' is'} measured against a substitute typeface`
++        : 'Web fonts did not load (sandbox egress) — text is rendered in a substitute typeface',
++      detail: 'Overflow, occlusion, clipping and CLS are measured off rendered text width. This container has Liberation and DejaVu but no Segoe UI, Inter or Roboto, so `system-ui` and any webfont resolve to a face the developer never sees. Findings tagged `font-dependent` are about THIS render, not theirs. Record a HAR on a networked machine (--record-har) and replay it here (--har) to make them real.',
++    });
++  }
++
+   findings.sort((a, b) => (RANK[a.severity] ?? 3) - (RANK[b.severity] ?? 3));
+ 
+   const layoutCount = baseFindings.length + comboFindings.length;
+@@ -416,6 +490,9 @@ export async function verify(session, opts = {}) {
+     netFailed: net.failed.length, netHttpError: net.httpError.length, netHanging: net.hanging.length, netMixed: net.mixedContent.length,
+     a11y: axeGroups.length, layout: layoutCount,
+     ...(ignored404.length || ignoredConsole.length ? { ignored404: ignored404.length + ignoredConsole.length } : {}),
++    // Counted so it is visible, kept OUT of ok so it can never fail a build for an environment the
++    // developer did not choose.
++    ...(sandboxBlocked.length || blockedConsole.length ? { sandboxBlocked: sandboxBlocked.length + blockedConsole.length } : {}),
+     ...(baseLayout?.deferred?.length ? { deferred: baseLayout.deferred.reduce((n2, g) => n2 + g.count, 0) } : {}),
+     ...(baseLayout?.collapsed?.length ? { collapsed: baseLayout.collapsed.reduce((n2, g) => n2 + g.count, 0) } : {}),
+   };
+@@ -430,12 +507,14 @@ export async function verify(session, opts = {}) {
+   let axePath;
+   if (wantAxe) { axePath = session.journal.alloc('reports', `axe-${n}.json`); try { fs.writeFileSync(axePath, JSON.stringify(axeRaw)); } catch { /* disk */ } }
+   const reportPath = session.journal.alloc('reports', `verify-${n}.json`);
++  conditions.load = navigation.kind;
++  tagPortability(findings, conditions);
+   const full = {
+-    ok, settled: settleRes.settled, settleWhy: settleRes.why, url: page.url(), navigation, counts,
++    ok, settled: settleRes.settled, settleWhy: settleRes.why, url: page.url(), navigation, conditions, counts,
+     findings, // uncapped on disk
+     // Demoted rows are DEMOTED, never dropped: an allowlist that deletes evidence is a liability.
+-    errors: { console: consoleErrs, page: pageErrs, ...(ignoredConsole.length ? { ignored: ignoredConsole } : {}) },
+-    network: { ...net, ...(ignored404.length ? { ignored404 } : {}) },
++    errors: { console: consoleErrs, page: pageErrs, ...(ignoredConsole.length ? { ignored: ignoredConsole } : {}), ...(blockedConsole.length ? { sandboxBlocked: blockedConsole } : {}) },
++    network: { ...net, ...(ignored404.length ? { ignored404 } : {}), ...(sandboxBlocked.length ? { sandboxBlocked } : {}) },
+     layout: baseLayout, sweep: comboFindings, theme: themeFindings,
+     modal: baseLayout?.modal || null, deferred: baseLayout?.deferred || [], collapsed: baseLayout?.collapsed || [],
+     overlay, a11y: axeGroups,
+@@ -447,7 +526,7 @@ export async function verify(session, opts = {}) {
+   session.journal.log('command', { op: 'verify', ok, counts, navigation: navigation.kind, report: reportPath });
+ 
+   return {
+-    ok, settled: settleRes.settled, url: page.url(), navigation, counts,
++    ok, settled: settleRes.settled, url: page.url(), navigation, conditions, counts,
+     findings: findings.slice(0, 20),
+     artifacts: { report: reportPath, screenshots: shots, ...(axePath ? { axe: axePath } : {}), netlog: netlogPath },
+     tookMs: Date.now() - t0,
+diff --git a/src/dev.mjs b/src/dev.mjs
+index ed04e19..404b09f 100644
+--- a/src/dev.mjs
++++ b/src/dev.mjs
+@@ -68,12 +68,17 @@ function defaultCmd(cwd) {
+ const DEV_DIR = path.join(PATHS.root, 'dev');
+ const recordPath = (cliPid) => path.join(DEV_DIR, `${cliPid}.json`);
+ 
+-/** Kill a whole process tree: taskkill /T /F on win32, the negative-PID group kill on POSIX. */
++/**
++ * Kill a whole process tree. Both platforms now go through prockit's taskkillTree — `taskkill /T /F`
++ * on win32, a /proc descendant walk (leaves first, then the process group as a backstop) on POSIX.
++ *
++ * The POSIX path used to be a bare `kill(-pid)`. A dev server run through `shell:true` can leave a
++ * grandchild outside the group — m7 caught exactly one survivor — and a reaper that misses one node
++ * process leaves a port bound, which the NEXT run reports as "your dev server is already running".
++ */
+ function killTree(pid) {
+   if (!pid) return false;
+-  if (process.platform === 'win32') return taskkillTree(pid);
+-  try { process.kill(-pid, 'SIGKILL'); return true; } catch { /* not a group leader */ }
+-  try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; }
++  return taskkillTree(pid);
+ }
+ 
+ function writeDevRecord(rec) {
+diff --git a/src/mcp-shim.mjs b/src/mcp-shim.mjs
+index 96129a8..a05c81c 100644
+--- a/src/mcp-shim.mjs
++++ b/src/mcp-shim.mjs
+@@ -58,9 +58,17 @@ const TOOLS = [
+     inputSchema: {
+       type: 'object',
+       properties: {
+-        op: { type: 'string', enum: ['open', 'list', 'close', 'info', 'resize'], description: 'open a new session | list all | close one | info on one | resize one (needs viewport)' },
++        op: { type: 'string', enum: ['open', 'list', 'close', 'info', 'resize', 'export'], description: 'open a new session | list all | close one | info on one | resize one (needs viewport) | export the latest verify report as one self-contained .html (the sandbox stand-in for gb_watch, which needs a human who can reach this machine)' },
+         name: S.string('session name (required for open/close/info/resize); 1-64 chars of [A-Za-z0-9._-]'),
+-        headed: S.bool('open a visible window (default false/headless) — use for hover/tooltip/GPU-sensitive checks'),
++        headed: S.bool('open a visible window — use for hover/tooltip/GPU-sensitive checks. Default is headless locally and HEADED (under Xvfb) in a container, where a headless browser reports a 0px scrollbar and therefore cannot see horizontal overflow at all'),
++        headless: S.bool('force headless even where headed is the default'),
++        har: S.string('replay a HAR recording instead of hitting the network — the fidelity bridge for a sandbox whose egress is jailed. Carries the real API responses AND the real font files, so text-metric findings stop being about a substitute typeface'),
++        harNotFound: { type: 'string', enum: ['fallback', 'abort'], description: "unmatched requests: 'fallback' (default) goes to the real network, 'abort' makes any unrecorded request a finding" },
++        harUrl: S.string('glob limiting which URLs are served from the HAR (default: all)'),
++        recordHar: S.string('RECORD a HAR to this path — run this on a machine with real network, then close the session to write the file'),
++        timezone: S.string("IANA timezone (a container inherits UTC; the sandbox pins America/Los_Angeles unless told otherwise)"),
++        locale: S.string('BCP-47 locale (a container inherits none)'),
++        out: S.string('op:export only — where to write the .html (default: beside the report)'),
+         viewport: { type: 'object', description: '{width,height} in CSS px (op:open initial size, or op:resize target size)', properties: { width: S.int(''), height: S.int('') } },
+         colorScheme: { type: 'string', enum: ['light', 'dark'], description: 'initial prefers-color-scheme' },
+         themeAttr: S.string("the site's own theme ATTRIBUTE on <html> (e.g. 'data-theme') so verify can sweep it alongside emulateMedia"),
+@@ -236,9 +244,14 @@ function planCall(tool, a) {
+       if (op === 'open') {
+         if (!a.name) throw { gb: { code: 'BAD_REQUEST', message: 'gb_session open needs a `name`', field: 'name' } };
+         const body = { name: a.name };
+-        for (const k of ['headed', 'viewport', 'colorScheme', 'themeAttr', 'themeClass', 'ignore404', 'baseUrl']) if (a[k] != null) body[k] = a[k];
++        for (const k of ['headed', 'headless', 'viewport', 'colorScheme', 'themeAttr', 'themeClass', 'ignore404', 'baseUrl',
++          // sandbox backend: the HAR bridge + explicit environment pinning
++          'har', 'harNotFound', 'harUrl', 'recordHar', 'timezone', 'locale']) if (a[k] != null) body[k] = a[k];
+         return { method: 'POST', route: '/sessions', body };
+       }
++      // Sandbox human channel. Rides inside gb_session for the same reason resize does: the
++      // 14-tool ceiling is a hard contract (research 04).
++      if (op === 'export') return { method: 'POST', route: `/sessions/${enc(needName(a))}/export`, body: a.out ? { out: a.out } : {} };
+       if (op === 'list') return { method: 'GET', route: '/sessions' };
+       if (op === 'info') return { method: 'GET', route: `/sessions/${enc(needName(a))}` };
+       if (op === 'close') return { method: 'DELETE', route: `/sessions/${enc(needName(a))}` };
+diff --git a/src/platform.mjs b/src/platform.mjs
+new file mode 100644
+index 0000000..e57e254
+--- /dev/null
++++ b/src/platform.mjs
+@@ -0,0 +1,312 @@
++// The platform seam. Everything that differs between "Glassbox on Adi's Windows box" and
++// "Glassbox inside an ephemeral Linux agent container" is decided here, once, and nowhere else.
++//
++// Four members, per docs/01-architecture.md §11:
++//   1. launcher       — which Chromium, headed or headless, and under whose X display
++//   2. network policy — is outbound traffic open, or jailed behind an allowlisting proxy
++//   3. human channel  — a live screencast a person can open, or an exported artifact
++//   4. lifecycle      — where runtime state lives and how strays are found and reaped
++//
++// Only Node builtins in here: protocol.mjs imports this file and must stay cheap enough for the
++// CLI and the MCP shim to load it on every invocation.
++import fs from 'node:fs';
++import os from 'node:os';
++import path from 'node:path';
++import { spawn, execFileSync } from 'node:child_process';
++
++// Every glassbox-launched chromium carries its --user-data-dir in the command line; the orphan
++// sweep matches on that (never a bare PID). Lives here rather than in protocol.mjs because the
++// platform-specific process reapers are its only consumers.
++//
++// The marker used to be the bare string 'glassbox', on the assumption that the state root always
++// contains it. It does not: point GLASSBOX_HOME anywhere else — which the test suite must, to avoid
++// reaping a developer's real sessions — and the reaper silently matched nothing and reported zero
++// strays forever. So the marker is now the ACTUAL chrome-data path, and the loose string is kept
++// only as a fallback for a process whose cmdline we could not read in full.
++export const CHROME_MARKER = 'glassbox';
++
++// ─────────────────────────────────────────────────────────────────────────────
++// 0. Which platform are we
++// ─────────────────────────────────────────────────────────────────────────────
++
++/**
++ * Sandbox detection, with its reasons kept. A verify report states the conditions it measured
++ * under, and "sandbox" is the loudest of those conditions — so the decision has to be auditable,
++ * not a boolean that appeared from nowhere. GLASSBOX_PLATFORM always wins.
++ */
++function detectKind() {
++  const forced = (process.env.GLASSBOX_PLATFORM || '').toLowerCase();
++  if (forced === 'sandbox') return { kind: 'sandbox', why: ['GLASSBOX_PLATFORM=sandbox'] };
++  if (forced === 'local' || forced === 'win32' || forced === 'posix') {
++    return { kind: process.platform === 'win32' ? 'win32' : 'posix', why: [`GLASSBOX_PLATFORM=${forced}`] };
++  }
++  if (process.platform === 'win32') return { kind: 'win32', why: ['process.platform=win32'] };
++
++  const why = [];
++  if (process.env.CCR_AGENT_PROXY_ENABLED) why.push('CCR_AGENT_PROXY_ENABLED');
++  if (process.env.PLAYWRIGHT_BROWSERS_PATH) why.push(`PLAYWRIGHT_BROWSERS_PATH=${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
++  if (exists('/.dockerenv')) why.push('/.dockerenv');
++  if (process.env.CODESPACES) why.push('CODESPACES');
++  if (process.env.E2B_SANDBOX_ID) why.push('E2B_SANDBOX_ID');
++  // A container without a display is the operative fact for the launcher regardless of vendor.
++  if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) why.push('no DISPLAY');
++
++  return why.length >= 2 ? { kind: 'sandbox', why } : { kind: 'posix', why: why.length ? why : ['process.platform=' + process.platform] };
++}
++
++function exists(p) {
++  try { fs.accessSync(p); return true; } catch { return false; }
++}
++
++const DETECTED = detectKind();
++
++/** 'win32' | 'sandbox' | 'posix' */
++export const KIND = DETECTED.kind;
++export const KIND_REASONS = Object.freeze(DETECTED.why);
++export const IS_SANDBOX = KIND === 'sandbox';
++export const IS_WIN32 = KIND === 'win32';
++
++// ─────────────────────────────────────────────────────────────────────────────
++// 1. Lifecycle: where runtime state lives
++// ─────────────────────────────────────────────────────────────────────────────
++
++/**
++ * The state root. Short by design (MAX_PATH, research 07) and — critically — never relative.
++ * The old fallback chain ended in '.', which meant the CLI, a daemon spawned with a different cwd,
++ * and the test runner could each compute a different root and then disagree about where
++ * daemon.json lives. A discovery file nobody can find is indistinguishable from a dead daemon.
++ */
++export function stateRoot() {
++  if (process.env.GLASSBOX_HOME) return path.resolve(process.env.GLASSBOX_HOME);
++  if (IS_WIN32) {
++    const base = process.env.LOCALAPPDATA || process.env.TEMP;
++    if (base) return path.join(base, 'glassbox');
++    return path.join(os.homedir(), 'glassbox');
++  }
++  const xdg = process.env.XDG_STATE_HOME;
++  if (xdg) return path.join(xdg, 'glassbox');
++  const home = os.homedir();
++  // homedir() can be '/' in a stripped container; anywhere unwritable is worse than tmp.
++  if (home && home !== '/' && home !== '') return path.join(home, '.glassbox');
++  return path.join(os.tmpdir(), 'glassbox');
++}
++
++/** The exact --user-data-dir prefix every glassbox chromium carries. The reaper's real marker. */
++export function chromeDataDir() {
++  return path.join(stateRoot(), 'chrome-data');
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// 2. Launcher: which Chromium, and under whose display
++// ─────────────────────────────────────────────────────────────────────────────
++
++/**
++ * Find a Chromium the sandbox can actually launch.
++ *
++ * Playwright pins a browser revision per release; a container that ships a *different* revision
++ * (this one: playwright 1.61 wants chromium-1228, the image has chromium-1194) makes
++ * `channel:'chromium'` fail at launch with a "please run playwright install" error — and in a
++ * sandbox with a package-registry-only allowlist, `playwright install` cannot fetch anything.
++ * So we resolve a binary by path and hand it over as executablePath, which skips the registry.
++ *
++ * Preference order is deliberate: the full chromium build beats chromium_headless_shell, because
++ * headless_shell cannot run headed under Xvfb and headed is the higher-fidelity mode here.
++ */
++export function findChromium() {
++  if (process.env.GLASSBOX_CHROMIUM) {
++    const p = process.env.GLASSBOX_CHROMIUM;
++    if (exists(p)) return { path: p, why: 'GLASSBOX_CHROMIUM' };
++    return { path: null, why: `GLASSBOX_CHROMIUM=${p} does not exist` };
++  }
++  const roots = [process.env.PLAYWRIGHT_BROWSERS_PATH, '/opt/pw-browsers', '/ms-playwright'].filter(Boolean);
++  const found = [];
++  for (const root of roots) {
++    let entries = [];
++    try { entries = fs.readdirSync(root); } catch { continue; }
++    for (const e of entries) {
++      const m = /^chromium(_headless_shell)?-(\d+)$/.exec(e);
++      if (!m) continue;
++      const rev = Number(m[2]);
++      const shell = !!m[1];
++      for (const rel of ['chrome-linux/chrome', 'chrome-linux64/chrome', 'chrome-linux/headless_shell']) {
++        const p = path.join(root, e, rel);
++        if (exists(p)) { found.push({ path: p, rev, shell }); break; }
++      }
++    }
++  }
++  if (found.length) {
++    found.sort((a, b) => (a.shell !== b.shell ? (a.shell ? 1 : -1) : b.rev - a.rev));
++    return { path: found[0].path, why: `discovered rev ${found[0].rev}${found[0].shell ? ' (headless shell)' : ''}` };
++  }
++  for (const bin of ['chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable']) {
++    try {
++      const p = execFileSync('which', [bin], { encoding: 'utf8', timeout: 5000 }).trim();
++      if (p && exists(p)) return { path: p, why: `which ${bin}` };
++    } catch { /* keep looking */ }
++  }
++  return { path: null, why: 'no chromium found on disk' };
++}
++
++let CHROMIUM = null;
++export function chromiumPath() {
++  if (CHROMIUM === null) CHROMIUM = IS_WIN32 ? { path: null, why: 'playwright channel' } : findChromium();
++  return CHROMIUM;
++}
++
++/**
++ * Headed is the sandbox DEFAULT, which is the opposite of every other container browser setup.
++ *
++ * Measured on this image: headless Chromium reports a scrollbar width of 0px (overlay scrollbars),
++ * headed-under-Xvfb reports 15px — the same reserved gutter Windows Chrome gives you. A 0px
++ * scrollbar silently hides the entire `100vw`-horizontal-overflow and right-edge-clipping bug
++ * class, which is exactly what a layout audit exists to catch. Headless also leaves
++ * "HeadlessChrome" in the UA, which some apps branch on.
++ *
++ * Xvfb costs one ~30MB process. The bug class costs more than that.
++ */
++export function defaultHeaded() {
++  if (!IS_SANDBOX) return false;
++  if (process.env.GLASSBOX_HEADLESS === '1') return false;
++  return hasXvfb() || !!process.env.DISPLAY;
++}
++
++export function hasXvfb() {
++  try { execFileSync('which', ['Xvfb'], { stdio: 'ignore', timeout: 5000 }); return true; } catch { return false; }
++}
++
++let XVFB = null;
++
++/**
++ * Bring up a display for headed mode, if one is needed and none exists. Returns a descriptor for
++ * the conditions block, so a report can say "headed-xvfb" rather than implying a real screen.
++ * Idempotent; the Xvfb child is detached so it outlives the turn that started it (a bare
++ * background child is reaped at the turn boundary in this harness — see the detach note in
++ * protocol.mjs).
++ */
++export function ensureDisplay(headed) {
++  if (!headed || IS_WIN32) return { display: headed ? 'headed' : 'headless' };
++  if (process.env.DISPLAY && !XVFB) return { display: 'headed', server: process.env.DISPLAY };
++  if (XVFB) return { display: 'headed-xvfb', server: process.env.DISPLAY };
++  if (!hasXvfb()) return { display: 'headless', downgraded: 'headed requested but no Xvfb and no DISPLAY' };
++
++  const num = Number(process.env.GLASSBOX_XVFB_DISPLAY || 99);
++  const screen = process.env.GLASSBOX_XVFB_SCREEN || '1920x1080x24';
++  const sock = `/tmp/.X11-unix/X${num}`;
++  if (!exists(sock)) {
++    const child = spawn('Xvfb', [`:${num}`, '-screen', '0', screen, '-nolisten', 'tcp'], {
++      detached: true, stdio: 'ignore',
++    });
++    child.unref();
++    const deadline = Date.now() + 5000;
++    while (Date.now() < deadline && !exists(sock)) { try { execFileSync('sleep', ['0.1']); } catch { /* spin */ } }
++    if (!exists(sock)) return { display: 'headless', downgraded: `Xvfb :${num} did not come up within 5s` };
++  }
++  XVFB = { num, screen };
++  process.env.DISPLAY = `:${num}`;
++  return { display: 'headed-xvfb', server: `:${num}`, screen };
++}
++
++/**
++ * The complete option bag for chromium.launchPersistentContext. This is the ONLY place launch
++ * options are decided; sessions.mjs must not add any.
++ */
++export function launchOptions({ headed }) {
++  const args = ['--remote-debugging-port=0'];
++  const opts = { headless: !headed, args };
++
++  if (IS_WIN32) {
++    opts.channel = 'chromium';
++    return opts;
++  }
++
++  const chrome = chromiumPath();
++  if (chrome.path) opts.executablePath = chrome.path;
++  else opts.channel = 'chromium';
++
++  // /dev/shm is commonly 64MB in a container; Chromium's default shared-memory use blows through
++  // it and the renderer dies with a tab crash that looks like an app bug.
++  args.push('--disable-dev-shm-usage');
++  // Running as uid 0 makes Chromium's own sandbox refuse to start. Only then — never blanket.
++  if (typeof process.getuid === 'function' && process.getuid() === 0) args.push('--no-sandbox');
++  return opts;
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// 3. Network policy: is outbound traffic open, or jailed
++// ─────────────────────────────────────────────────────────────────────────────
++
++const EGRESS_CANARY = process.env.GLASSBOX_EGRESS_CANARY || 'https://example.com/';
++let EGRESS = null;
++
++/**
++ * Measure egress rather than assume it. An agent sandbox typically routes all traffic through an
++ * allowlisting proxy that permits package registries and refuses everything else — which means a
++ * page under test cannot load a web font, a CDN script, or its own API, and every one of those
++ * shows up in the network taxonomy as a failure indistinguishable from a real bug.
++ *
++ * The verifier's job is to not lie about that, so it checks instead of guessing. Result is cached
++ * for the daemon's lifetime plus persisted with a TTL, because the answer does not change often
++ * and the check costs a round trip.
++ */
++export async function probeEgress({ ttlMs = 3600_000, cacheFile = null } = {}) {
++  if (EGRESS) return EGRESS;
++  if (cacheFile) {
++    try {
++      const c = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
++      if (c && Date.now() - c.at < ttlMs && c.state) { EGRESS = c; return EGRESS; }
++    } catch { /* no cache */ }
++  }
++  let state = 'open';
++  let detail = `${EGRESS_CANARY} reachable`;
++  try {
++    const ctl = new AbortController();
++    const t = setTimeout(() => ctl.abort(), 5000);
++    const res = await fetch(EGRESS_CANARY, { signal: ctl.signal, redirect: 'manual' });
++    clearTimeout(t);
++    if (res.status === 403 || res.status === 407) { state = 'jailed'; detail = `${EGRESS_CANARY} → ${res.status} (proxy refused)`; }
++  } catch (e) {
++    state = 'jailed';
++    detail = `${EGRESS_CANARY} → ${String(e.cause?.code || e.name || e.message).slice(0, 60)}`;
++  }
++  EGRESS = { state, detail, at: Date.now() };
++  if (cacheFile) {
++    try { fs.mkdirSync(path.dirname(cacheFile), { recursive: true }); fs.writeFileSync(cacheFile, JSON.stringify(EGRESS)); } catch { /* best effort */ }
++  }
++  return EGRESS;
++}
++
++/** Synchronous read of whatever probeEgress last learned; 'unknown' before the first probe. */
++export function egressState() {
++  return EGRESS ? EGRESS.state : 'unknown';
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// 4. Human channel
++// ─────────────────────────────────────────────────────────────────────────────
++
++/**
++ * 'live'   — a person can open the watch URL on this machine's loopback.
++ * 'export' — nobody can reach loopback here; the report has to leave as a file.
++ */
++export const HUMAN_CHANNEL = IS_SANDBOX ? 'export' : 'live';
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Conditions
++// ─────────────────────────────────────────────────────────────────────────────
++
++/**
++ * The platform half of a verify report's conditions block. A finding without its conditions is a
++ * claim the instrument cannot support: "0 errors" measured with no fonts, no network and a
++ * software rasterizer is not the same sentence as "0 errors" on the developer's machine.
++ */
++export function describePlatform() {
++  const chrome = chromiumPath();
++  return {
++    kind: KIND,
++    detectedBy: KIND_REASONS.slice(0, 4),
++    browserPath: chrome.path || 'playwright channel:chromium',
++    egress: egressState(),
++    raster: IS_SANDBOX ? 'software' : 'gpu',
++    humanChannel: HUMAN_CHANNEL,
++  };
++}
+diff --git a/src/protocol.mjs b/src/protocol.mjs
+index 62d6f30..da54d9b 100644
+--- a/src/protocol.mjs
++++ b/src/protocol.mjs
+@@ -6,21 +6,29 @@ import path from 'node:path';
+ import fs from 'node:fs';
+ import { spawn } from 'node:child_process';
+ import { fileURLToPath } from 'node:url';
++import { stateRoot, CHROME_MARKER as MARKER } from './platform.mjs';
+ 
+ export const VERSION = '0.1.0';
+ export const HOST = '127.0.0.1';
+ 
+-const ROOT = path.join(process.env.LOCALAPPDATA || process.env.TEMP || '.', 'glassbox');
++// The state root now comes from the platform seam (platform.mjs §1). It used to end its fallback
++// chain in '.', which on any box without LOCALAPPDATA made the root RELATIVE — so the CLI, a
++// daemon spawned with a different cwd, and the test runner could each compute a different root and
++// then disagree about where daemon.json lives.
++const ROOT = stateRoot();
+ export const PATHS = Object.freeze({
+   root: ROOT,
+   daemonFile: path.join(ROOT, 'daemon.json'),
+   sessions: path.join(ROOT, 'sessions'),
+   chromeData: path.join(ROOT, 'chrome-data'),
++  egressCache: path.join(ROOT, 'egress.json'),
+ });
+ 
+-// Every glassbox-launched chromium carries `...\glassbox\chrome-data\...` in its command
+-// line via --user-data-dir; the orphan sweep matches on this marker (never a bare PID).
+-export const CHROME_MARKER = 'glassbox';
++// Every glassbox-launched chromium carries `glassbox/chrome-data` in its command line via
++// --user-data-dir; the orphan sweep matches on this marker (never a bare PID). Defined in
++// platform.mjs (its consumers are the platform-specific reapers), re-exported here for the
++// call sites that already import it from the protocol contract.
++export const CHROME_MARKER = MARKER;
+ 
+ export const CODES = Object.freeze({
+   NO_SESSION: 'NO_SESSION',
+@@ -134,7 +142,7 @@ export async function probeDaemon(d) {
+ 
+ // The daemon entry, resolved once as a path string (NOT an import — no cycle: daemon.mjs imports
+ // this file, this file only spawns it by path).
+-const DAEMON_ENTRY = fileURLToPath(new URL('./daemon/daemon.mjs', import.meta.url));
++export const DAEMON_ENTRY = fileURLToPath(new URL('./daemon/daemon.mjs', import.meta.url));
+ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+ 
+ /** Read the discovery file, or null if absent/unreadable. */
+diff --git a/src/report-html.mjs b/src/report-html.mjs
+new file mode 100644
+index 0000000..9cfcb08
+--- /dev/null
++++ b/src/report-html.mjs
+@@ -0,0 +1,160 @@
++// Artifact export — the sandbox's human channel.
++//
++// On a developer's own machine, `glassbox watch` is how a person sees what the instrument sees: a
++// live screencast on loopback they can click into. In a container nobody can reach loopback, so
++// that whole channel is gone and there is no engineering that brings it back.
++//
++// What replaces it is not a live view but a durable one: a single self-contained HTML file with the
++// findings, the conditions they were measured under, and the screenshots inlined as data URLs.
++// It travels — attach it to a message, commit it next to the code, open it a week later — which
++// the screencast never did.
++//
++// fs only. No playwright, no daemon: this reads an on-disk verify report, so it works after the
++// browser is gone, after the daemon is gone, and from the CLI without a round trip.
++import fs from 'node:fs';
++import path from 'node:path';
++
++const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
++
++function dataUrl(file) {
++  try {
++    const buf = fs.readFileSync(file);
++    const ext = path.extname(file).toLowerCase();
++    const mime = ext === '.webp' ? 'image/webp' : ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'application/octet-stream';
++    return `data:${mime};base64,${buf.toString('base64')}`;
++  } catch {
++    return null;
++  }
++}
++
++/** Newest verify-*.json in a session's reports dir, or null. */
++export function latestReport(sessionsRoot, name) {
++  const dir = path.join(sessionsRoot, name, 'reports');
++  let files;
++  try { files = fs.readdirSync(dir).filter((f) => /^verify-\d+\.json$/.test(f)); } catch { return null; }
++  if (!files.length) return null;
++  files.sort((a, b) => Number(/(\d+)/.exec(a)[1]) - Number(/(\d+)/.exec(b)[1]));
++  return path.join(dir, files[files.length - 1]);
++}
++
++const SEV_ORDER = { error: 0, warn: 1, info: 2 };
++
++// The three portability classes, spelled out where the reader is looking at the findings rather
++// than in documentation they have to have read. A label with no explanation is just a badge.
++const PORT_NOTE = {
++  portable: 'Computed from values the browser was given — CSS colours, the cascade, the DOM, HTTP status. Means the same thing on any machine.',
++  'font-dependent': 'Measured off rendered text width. This run used a substitute typeface, so the number is about THIS render, not the developer\'s.',
++  'sandbox-artifact': 'A fact about the environment, not about the code. Would not occur on a normal machine.',
++};
++
++export function buildReportHtml(report, { title = 'Glassbox verify', shotsLimit = 8 } = {}) {
++  const c = report.conditions || {};
++  const findings = [...(report.findings || [])].sort((a, b) => (SEV_ORDER[a.severity] ?? 3) - (SEV_ORDER[b.severity] ?? 3));
++  const shots = (report.artifacts?.screenshots || []).slice(0, shotsLimit);
++
++  const condRow = (k, v, warn) =>
++    `<div class="c${warn ? ' warn' : ''}"><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`;
++
++  // Which conditions deserve a highlight: the ones that change what a finding means.
++  const conds = [
++    condRow('platform', c.platform || 'unknown', c.platform === 'sandbox'),
++    condRow('display', c.display || 'unknown', c.display === 'headless'),
++    condRow('load', c.load || 'unknown', c.load === 'warm'),
++    condRow('egress', c.egress || 'unknown', c.egress === 'jailed'),
++    condRow('fonts', c.fonts || 'unknown', c.fonts === 'substituted'),
++    condRow('raster', c.raster || 'unknown', c.raster === 'software'),
++    condRow('viewport', c.viewport ? `${c.viewport.width}×${c.viewport.height}` : '—', false),
++    condRow('colour scheme', c.colorScheme || '—', false),
++    condRow('timezone', c.timezone || '—', false),
++    c.stubs ? condRow('HAR', `${path.basename(c.stubs.har)} — ${c.stubs.entries} entries, ${c.stubs.fonts} fonts`, false) : '',
++  ].join('');
++
++  const counts = Object.entries(report.counts || {})
++    .map(([k, v]) => `<span class="n${v ? ' hot' : ''}"><b>${v}</b> ${esc(k)}</span>`)
++    .join('');
++
++  const rows = findings.map((f) => `
++    <li class="f ${esc(f.severity)}">
++      <div class="hd"><span class="sev">${esc(f.severity)}</span><span class="ch">${esc(f.channel)}</span>${
++        f.portability && f.portability !== 'portable' ? `<span class="port ${esc(f.portability)}" title="${esc(PORT_NOTE[f.portability] || '')}">${esc(f.portability)}</span>` : ''
++      }</div>
++      <div class="sum">${esc(f.summary)}</div>
++      ${f.detail ? `<div class="det">${esc(Array.isArray(f.detail) ? f.detail.join('\n') : f.detail)}</div>` : ''}
++    </li>`).join('');
++
++  const shotHtml = shots.map((s) => {
++    const p = typeof s === 'string' ? s : s.path;
++    const url = p ? dataUrl(p) : null;
++    if (!url) return '';
++    return `<figure><img src="${url}" alt="${esc(path.basename(p))}"><figcaption>${esc(path.basename(p))}</figcaption></figure>`;
++  }).join('');
++
++  const legend = Object.entries(PORT_NOTE).map(([k, v]) => `<div><b>${esc(k)}</b> — ${esc(v)}</div>`).join('');
++
++  return `<!doctype html>
++<html lang="en"><head><meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>${esc(title)}</title>
++<style>
++:root{--bg:#fbfaf9;--fg:#1c1917;--mut:#78716c;--line:#e7e5e4;--err:#b91c1c;--warn:#b45309;--info:#57534e;--card:#fff}
++@media(prefers-color-scheme:dark){:root{--bg:#1c1917;--fg:#f5f5f4;--mut:#a8a29e;--line:#292524;--err:#f87171;--warn:#fbbf24;--info:#d6d3d1;--card:#232020}}
++*{box-sizing:border-box}
++body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial,"Liberation Sans",sans-serif}
++main{max-width:940px;margin:0 auto;padding:32px 20px 80px}
++h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
++.url{color:var(--mut);font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all;margin-bottom:20px}
++.verdict{display:inline-block;padding:3px 10px;border-radius:999px;font-weight:600;font-size:13px}
++.verdict.ok{background:#dcfce7;color:#166534}.verdict.bad{background:#fee2e2;color:#991b1b}
++@media(prefers-color-scheme:dark){.verdict.ok{background:#14532d;color:#bbf7d0}.verdict.bad{background:#7f1d1d;color:#fecaca}}
++h2{font-size:13px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:32px 0 10px;font-weight:600}
++.conds{margin:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden}
++.c{background:var(--card);padding:9px 12px}
++.c.warn{background:#fffbeb}@media(prefers-color-scheme:dark){.c.warn{background:#2a2416}}
++.c dt{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);margin:0}
++.c dd{margin:2px 0 0;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}
++.counts{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 0}
++.n{font-size:12px;padding:3px 8px;border-radius:6px;background:var(--card);border:1px solid var(--line);color:var(--mut)}
++.n.hot{color:var(--fg);border-color:var(--mut)}
++ul.fs{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
++.f{background:var(--card);border:1px solid var(--line);border-left-width:3px;border-radius:7px;padding:10px 13px}
++.f.error{border-left-color:var(--err)}.f.warn{border-left-color:var(--warn)}.f.info{border-left-color:var(--info)}
++.hd{display:flex;gap:7px;align-items:center;margin-bottom:4px}
++.sev{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
++.f.error .sev{color:var(--err)}.f.warn .sev{color:var(--warn)}.f.info .sev{color:var(--info)}
++.ch{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:0 5px}
++.port{font-size:11px;border-radius:4px;padding:0 5px;cursor:help}
++.port.font-dependent{background:#fef3c7;color:#92400e}
++.port.sandbox-artifact{background:#e0e7ff;color:#3730a3}
++@media(prefers-color-scheme:dark){.port.font-dependent{background:#422006;color:#fcd34d}.port.sandbox-artifact{background:#1e1b4b;color:#c7d2fe}}
++.sum{font-size:14px}
++.det{margin-top:5px;font-size:12.5px;color:var(--mut);white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
++figure{margin:0 0 16px}
++figure img{width:100%;border:1px solid var(--line);border-radius:7px;display:block}
++figcaption{font-size:11px;color:var(--mut);margin-top:4px;font-family:ui-monospace,monospace}
++.legend{font-size:12.5px;color:var(--mut);display:flex;flex-direction:column;gap:5px;border-top:1px solid var(--line);padding-top:14px;margin-top:36px}
++.legend b{color:var(--fg);font-family:ui-monospace,monospace;font-weight:600}
++</style></head><body><main>
++<h1>${esc(title)} <span class="verdict ${report.ok ? 'ok' : 'bad'}">${report.ok ? 'ok' : 'not ok'}</span></h1>
++<div class="url">${esc(report.url || '')}</div>
++
++<h2>Conditions this was measured under</h2>
++<dl class="conds">${conds}</dl>
++<div class="counts">${counts}</div>
++
++<h2>Findings (${findings.length})</h2>
++${findings.length ? `<ul class="fs">${rows}</ul>` : '<p style="color:var(--mut)">No findings.</p>'}
++
++${shotHtml ? `<h2>Screenshots</h2>${shotHtml}` : ''}
++
++<div class="legend">${legend}</div>
++</main></body></html>`;
++}
++
++/** Read a report JSON and write the HTML beside it (or at `out`). Returns the output path. */
++export function exportReport(reportPath, { out = null, title } = {}) {
++  const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
++  const dest = out || reportPath.replace(/\.json$/, '.html');
++  fs.mkdirSync(path.dirname(dest), { recursive: true });
++  fs.writeFileSync(dest, buildReportHtml(report, { title: title || `Glassbox verify — ${report.url || ''}` }), 'utf8');
++  return { path: dest, ok: report.ok, findings: (report.findings || []).length, bytes: fs.statSync(dest).size };
++}
+diff --git a/test/bugzoo/serve.mjs b/test/bugzoo/serve.mjs
+index 5bccf31..d6d63f6 100644
+--- a/test/bugzoo/serve.mjs
++++ b/test/bugzoo/serve.mjs
+@@ -70,6 +70,12 @@ export function startBugzoo() {
+       return res.end('not found');
+     }
+     res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
++    // M13: pages that reference a THIRD-PARTY origin can't hardcode its ephemeral port. The zoo
++    // rewrites the placeholder at serve time from GLASSBOX_TP_BASE, so one fixture file serves both
++    // the record leg (third party up) and the replay leg (third party down).
++    if (path.extname(file) === '.html' && process.env.GLASSBOX_TP_BASE) {
++      return res.end(fs.readFileSync(file, 'utf8').split('TP_BASE').join(process.env.GLASSBOX_TP_BASE));
++    }
+     res.end(fs.readFileSync(file));
+   });
+ 
+diff --git a/test/bugzoo/thirdparty.html b/test/bugzoo/thirdparty.html
+new file mode 100644
+index 0000000..febd7ca
+--- /dev/null
++++ b/test/bugzoo/thirdparty.html
+@@ -0,0 +1,15 @@
++<!doctype html>
++<html lang="en"><head><meta charset="utf-8"><title>third-party</title>
++<!-- TP_BASE is rewritten by the test harness; a bare relative URL would defeat the point. -->
++<link rel="stylesheet" href="TP_BASE/css">
++<style>body{font-family:Recorded,serif;margin:0}main{padding:12px}</style>
++</head><body><main>
++<h1 class="tp">third-party page</h1>
++<p id="out">loading…</p>
++</main>
++<script>
++fetch('TP_BASE/api').then(r=>r.json())
++  .then(d=>{document.getElementById('out').textContent='items:'+d.items.length;document.title='items:'+d.items.length})
++  .catch(e=>{document.getElementById('out').textContent='api dead';console.error('API DEAD: '+e.message)});
++</script>
++</body></html>
+diff --git a/test/fixtures/third-party.mjs b/test/fixtures/third-party.mjs
+new file mode 100644
+index 0000000..ff686b1
+--- /dev/null
++++ b/test/fixtures/third-party.mjs
+@@ -0,0 +1,48 @@
++// A stand-in for "the internet" — the origins a sandboxed browser cannot reach.
++//
++// Used two ways by test/m13.mjs:
++//   1. RECORD leg: reachable, so a HAR can be captured against it (the "networked machine").
++//   2. REPLAY leg: shut down, so requests to it fail exactly the way the sandbox egress proxy makes
++//      them fail — which is what the fifth network bucket has to classify correctly.
++//
++// Cross-origin fonts are CORS-restricted, so the ACAO header is not decoration: without it the
++// font silently never loads and the HAR records a pending request with status -1. That is a real
++// trap when recording a HAR against a real site, and it is why the recording leg asserts on
++// response status rather than on entry count.
++import http from 'node:http';
++
++// A minimal but structurally valid WOFF2 header. Nothing renders it; the assertions are about
++// whether the bytes survive the record → replay round trip.
++const WOFF2 = Buffer.from('d9ff54ff000000240000000000000000000000000000', 'hex');
++
++export function startThirdParty(port = 0) {
++  const server = http.createServer((req, res) => {
++    res.setHeader('access-control-allow-origin', '*');
++    res.setHeader('cache-control', 'no-store');
++    const url = req.url || '/';
++    if (url.startsWith('/css')) {
++      res.writeHead(200, { 'content-type': 'text/css' });
++      return res.end('@font-face{font-family:Recorded;src:url(/f.woff2) format("woff2")}\n.tp{color:#0a7}');
++    }
++    if (url.startsWith('/f.woff2')) {
++      res.writeHead(200, { 'content-type': 'font/woff2' });
++      return res.end(WOFF2);
++    }
++    if (url.startsWith('/api')) {
++      res.writeHead(200, { 'content-type': 'application/json' });
++      return res.end(JSON.stringify({ items: [1, 2, 3] }));
++    }
++    res.writeHead(404);
++    res.end('nf');
++  });
++  return new Promise((resolve) => {
++    server.listen(port, '127.0.0.1', () => {
++      const p = server.address().port;
++      resolve({ server, port: p, base: `http://127.0.0.1:${p}`, close: () => new Promise((r) => server.close(r)) });
++    });
++  });
++}
++
++if (import.meta.url === `file://${process.argv[1]}`) {
++  startThirdParty(Number(process.argv[2]) || 0).then((s) => console.log(s.base));
++}
+diff --git a/test/m13.mjs b/test/m13.mjs
+new file mode 100644
+index 0000000..0be98a5
+--- /dev/null
++++ b/test/m13.mjs
+@@ -0,0 +1,199 @@
++// M13 — the sandbox backend. Proves the four platform members (launcher / network policy /
++// human channel / lifecycle) behave, and that the finding engine says what it measured under.
++//
++// Runs on BOTH platforms on purpose. Nothing here is skipped for being on Windows; the checks that
++// depend on a jailed network detect that condition and assert the OTHER side of the branch instead
++// of quietly passing. A test that goes green because it could not look is the exact failure this
++// milestone exists to remove — see the prockit note below.
++import { spawnSync, spawn } from 'node:child_process';
++import { fileURLToPath } from 'node:url';
++import fs from 'node:fs';
++import path from 'node:path';
++import os from 'node:os';
++import { PATHS } from '../src/protocol.mjs';
++import { KIND, stateRoot, chromiumPath, findChromium } from '../src/platform.mjs';
++import { classifyEgress, splitEgress } from '../src/daemon/egress.mjs';
++import { fontState, blockedFontEvidence } from '../src/daemon/stubs.mjs';
++import { buildReportHtml } from '../src/report-html.mjs';
++import { listGlassboxChromium } from '../src/daemon/prockit.mjs';
++
++
++const CLI = fileURLToPath(new URL('../src/cli.mjs', import.meta.url));
++const SERVE = fileURLToPath(new URL('./bugzoo/serve.mjs', import.meta.url));
++const THIRD_PARTY = fileURLToPath(new URL('./fixtures/third-party.mjs', import.meta.url));
++
++/**
++ * Both fixture servers run as CHILD PROCESSES, never in-process.
++ *
++ * This is not a style preference. `gb()` drives the CLI with spawnSync, which blocks this process's
++ * event loop for the whole call — so an http server living in this process cannot answer a single
++ * request while the browser is being driven. The first version of this test did exactly that and
++ * produced a beautifully plausible lie: the HAR came back with two entries, the page reported "api
++ * dead", and every assertion pointed at the HAR bridge instead of at the harness.
++ */
++function startServer(entry, args = [], env = {}) {
++  const child = spawn(process.execPath, [entry, ...args], { stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, ...env } });
++  const base = new Promise((res, rej) => {
++    const t = setTimeout(() => rej(new Error(`${path.basename(entry)} printed no URL in 10s`)), 10000);
++    child.stdout.on('data', (b) => { const m = /(http:\/\/\S+)/.exec(String(b)); if (m) { clearTimeout(t); res(m[1]); } });
++  });
++  return { child, base, kill: () => { try { child.kill('SIGKILL'); } catch { /* gone */ } } };
++}
++
++let pass = 0, fail = 0;
++const check = (name, ok, detail = '') => {
++  if (ok) { pass++; console.log(`PASS  ${name}${detail ? '  — ' + detail : ''}`); }
++  else { fail++; console.log(`FAIL  ${name}${detail ? '  — ' + detail : ''}`); }
++};
++const gb = (args, timeout = 120000) => {
++  const r = spawnSync(process.execPath, [CLI, ...args, '--json'], { encoding: 'utf8', timeout });
++  try { return JSON.parse((r.stdout || '').trim().split('\n').pop()); } catch { return { _raw: r.stdout, _err: r.stderr, _status: r.status }; }
++};
++const delay = (ms) => new Promise((r) => setTimeout(r, ms));
++
++async function main() {
++  // ─── 1. Platform seam: pure-function proofs, no browser needed ────────────────────────────
++  check('1a state root is absolute', path.isAbsolute(stateRoot()), stateRoot());
++  // The old fallback chain ended in '.', so on a box with no LOCALAPPDATA the root was RELATIVE and
++  // the CLI, a daemon spawned with another cwd, and this test could each compute a different one.
++  check('1b state root never relative to cwd', !stateRoot().startsWith('.'), stateRoot());
++  check('1c platform kind is known', ['win32', 'sandbox', 'posix'].includes(KIND), KIND);
++  if (KIND !== 'win32') {
++    const c = findChromium();
++    check('1d chromium resolved by PATH, not by playwright revision', !!c.path, `${c.path || '(none)'} via ${c.why}`);
++  } else {
++    check('1d chromium via playwright channel on win32', chromiumPath().path === null, 'channel:chromium');
++  }
++
++  // ─── 2. Egress classifier: the fifth bucket, as a pure function ───────────────────────────
++  const ctx = { policy: 'jailed', origins: ['http://127.0.0.1:5173'] };
++  check('2a loopback failure is ALWAYS the app',
++    classifyEgress({ url: 'http://localhost:5173/api/cart', failed: true, errorText: 'net::ERR_TUNNEL_CONNECTION_FAILED' }, ctx) === 'app',
++    'a broken local API can never be excused as "the sandbox did it"');
++  check('2b own-origin failure is the app',
++    classifyEgress({ url: 'http://127.0.0.1:5173/x.js', failed: true, errorText: 'net::ERR_CONNECTION_REFUSED' }, ctx) === 'app');
++  check('2c external proxy refusal is the sandbox',
++    classifyEgress({ url: 'https://fonts.googleapis.com/css2', failed: true, errorText: 'net::ERR_TUNNEL_CONNECTION_FAILED' }, ctx) === 'sandbox');
++  check('2d external 500 is still the app',
++    classifyEgress({ url: 'https://api.stripe.com/v1/x', status: 500 }, ctx) === 'app',
++    'a reachable API returning 500 is a real defect, not an environment artifact');
++  check('2e open policy demotes nothing',
++    classifyEgress({ url: 'https://fonts.googleapis.com/css2', failed: true, errorText: 'net::ERR_TUNNEL_CONNECTION_FAILED' }, { policy: 'open', origins: [] }) === 'app');
++  const split = splitEgress(
++    { failed: [{ url: 'https://cdn.jsdelivr.net/a.js', errorText: 'net::ERR_TUNNEL_CONNECTION_FAILED' }, { url: 'http://localhost:3000/x', errorText: 'net::ERR_CONNECTION_REFUSED' }], httpError: [] },
++    { policy: 'jailed', origins: ['http://localhost:3000'] });
++  check('2f split moves only the jail casualties',
++    split.sandboxBlocked.length === 1 && split.net.failed.length === 1,
++    `blocked=${split.sandboxBlocked.length} kept=${split.net.failed.length}`);
++
++  // ─── 3. Font state is asserted on EVIDENCE, never on being in a container ──────────────────
++  check('3a jailed + no font evidence => local-only, not a false warning',
++    fontState({ jailed: true, stubs: null, evidence: 0 }) === 'local-only',
++    'a page that ships no web fonts loses nothing to a jailed network');
++  check('3b jailed + evidence => substituted', fontState({ jailed: true, stubs: null, evidence: 2 }) === 'substituted');
++  check('3c HAR with fonts wins', fontState({ jailed: true, stubs: { fonts: 3 }, evidence: 9 }) === 'har-replayed');
++  check('3d blocked stylesheet counts as font evidence',
++    blockedFontEvidence([{ url: 'https://fonts.googleapis.com/css2?family=Inter', type: 'Stylesheet' }]) === 1,
++    'a blocked Google Fonts CSS means the @font-face rules never existed, so no font request is even attempted');
++
++  // ─── 4. Live: record a HAR, kill the origin, prove replay restores fidelity ────────────────
++  gb(['kill-all', '--force']);
++  await delay(500);
++
++  const tp = startServer(THIRD_PARTY);
++  const tpBase = await tp.base;
++  const zoo = startServer(SERVE, [], { GLASSBOX_TP_BASE: tpBase });
++  const base = await zoo.base;
++  const har = path.join(os.tmpdir(), `gb-m13-${process.pid}.har`);
++
++  try {
++    const openRec = gb(['session', 'open', 'm13rec', '--record-har', har]);
++    check('4a record session opens', !!openRec?.name, openRec?.error?.message || openRec?.name);
++    gb(['goto', `${base}/thirdparty.html`, '-s', 'm13rec']);
++    gb(['wait', '-s', 'm13rec', '--sleep', '1200']);
++    const titleLive = gb(['eval', '-s', 'm13rec', '--expression', 'document.title']);
++    check('4b third party reachable during record', titleLive?.value === 'items:3', String(titleLive?.value));
++    gb(['session', 'rm', 'm13rec']);
++    await delay(1200); // playwright writes the HAR on context close
++
++    const entries = (() => { try { return JSON.parse(fs.readFileSync(har, 'utf8')).log.entries; } catch { return []; } })();
++    const fontEntry = entries.find((e) => /f\.woff2/.test(e.request.url));
++    check('4c HAR captured the third-party responses', entries.length >= 4, `${entries.length} entries`);
++    check('4d HAR embeds the FONT BODY', !!fontEntry?.response?.content?.text,
++      'this is the whole point — the bytes travel with the code, so text metrics stop being fiction');
++
++    // Now the origin goes away. Requests to it fail the way an unreachable origin always fails.
++    tp.kill();
++    await delay(400);
++
++    gb(['session', 'open', 'm13nohar']);
++    gb(['goto', `${base}/thirdparty.html`, '-s', 'm13nohar']);
++    const vNo = gb(['verify', '-s', 'm13nohar']);
++    const outNo = gb(['eval', '-s', 'm13nohar', '--expression', "document.getElementById('out').textContent"]);
++    check('4e without the HAR the page is broken', vNo?.counts?.netFailed > 0 && outNo?.value === 'api dead',
++      `netFailed=${vNo?.counts?.netFailed} out=${outNo?.value}`);
++
++    gb(['session', 'open', 'm13har', '--har', har]);
++    gb(['goto', `${base}/thirdparty.html`, '-s', 'm13har']);
++    gb(['wait', '-s', 'm13har', '--sleep', '800']);
++    const vHar = gb(['verify', '-s', 'm13har']);
++    const outHar = gb(['eval', '-s', 'm13har', '--expression', "document.getElementById('out').textContent"]);
++    check('4f the HAR restores the app', vHar?.counts?.netFailed === 0 && outHar?.value === 'items:3',
++      `netFailed=${vHar?.counts?.netFailed} out=${outHar?.value}`);
++    check('4g conditions report fonts as har-replayed', vHar?.conditions?.fonts === 'har-replayed',
++      `fonts=${vHar?.conditions?.fonts} stubs=${JSON.stringify(vHar?.conditions?.stubs)}`);
++    // The replayed CSS brings a real low-contrast heading with it. The jailed run could not see it
++    // at all — so the bridge does not merely silence noise, it restores findings.
++    check('4h the HAR run SEES a defect the jailed run could not', (vHar?.counts?.layout || 0) > (vNo?.counts?.layout || 0),
++      `layout: no-har=${vNo?.counts?.layout} with-har=${vHar?.counts?.layout}`);
++
++    // ─── 5. Conditions block ────────────────────────────────────────────────────────────────
++    const c = vHar?.conditions || {};
++    check('5a every verify carries its conditions',
++      !!c.platform && !!c.display && !!c.egress && !!c.fonts && !!c.load,
++      JSON.stringify({ platform: c.platform, display: c.display, egress: c.egress, fonts: c.fonts, load: c.load }));
++    check('5b findings are tagged with their portability',
++      (vHar?.findings || []).every((f) => !!f.portability),
++      [...new Set((vHar?.findings || []).map((f) => f.portability))].join(', '));
++    const contrast = (vHar?.findings || []).find((f) => /contrast/i.test(f.summary));
++    check('5c a contrast finding is portable',
++      !contrast || contrast.portability === 'portable',
++      'contrast is computed from CSS colour values, not from pixels, so it survives any renderer');
++
++    // ─── 6. Human channel: export ───────────────────────────────────────────────────────────
++    const exp = gb(['export', '-s', 'm13har']);
++    check('6a export writes a file', !!exp?.path && fs.existsSync(exp.path), exp?.path || exp?.error?.message);
++    if (exp?.path) {
++      const html = fs.readFileSync(exp.path, 'utf8');
++      const external = /(?:src|href)\s*=\s*["'](?!data:|#)(https?:)?\/\//i.test(html);
++      check('6b export is SELF-CONTAINED', !external,
++        'it has to open on a machine with no network and no glassbox — external refs would defeat that');
++      check('6c export states the conditions', /Conditions this was measured under/.test(html) && html.includes(c.egress));
++    }
++    const htmlDirect = buildReportHtml({ ok: true, url: 'http://x/', conditions: { platform: 'sandbox' }, counts: {}, findings: [], artifacts: {} });
++    check('6d report builder handles an empty report', htmlDirect.includes('<!doctype html>') && htmlDirect.includes('No findings'));
++
++    // ─── 7. Lifecycle: the reaper must actually be able to look ─────────────────────────────
++    // Before M13 these functions returned [] on Linux (they shelled out to powershell.exe), so the
++    // suite's "0 strays" checks passed while browsers leaked. Asserting NON-zero with a browser up
++    // is what makes the zero mean something.
++    const live = listGlassboxChromium();
++    check('7a the process reaper can see our chromium while one is running', live.length > 0,
++      `${live.length} pids — a reaper that always answers "0" is worse than none`);
++
++    gb(['kill-all', '--force']);
++    await delay(1500);
++    const after = listGlassboxChromium();
++    check('7b kill-all --force actually reaps them', after.length === 0, `${after.length} left`);
++  } finally {
++    tp.kill();
++    zoo.kill();
++    try { fs.unlinkSync(har); } catch { /* gone */ }
++    gb(['kill-all', '--force']);
++  }
++
++  console.log(`\n${pass}/${pass + fail} checks passed`);
++  process.exitCode = fail ? 1 : 0;
++}
++
++main().catch((e) => { console.error(e); process.exitCode = 1; });
+-- 
+2.43.0
+

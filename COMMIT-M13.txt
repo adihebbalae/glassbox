@@ -1,0 +1,67 @@
+feat(M13): a sandbox backend, behind one platform seam
+
+Glassbox now runs in two places: a developer's machine, and an ephemeral Linux
+container where an agent both writes the code and checks it. One codebase, two
+backends — the verb surface, the finding engine and the noise discipline are
+shared and untouched; four members swap in src/platform.mjs and nowhere else.
+
+LAUNCHER. Chromium resolved by path rather than by playwright's pinned revision
+(an image shipping a different one fails channel resolution, and `playwright
+install` cannot fetch through a package-registry-only egress allowlist). Headed
+under Xvfb is the sandbox DEFAULT, measured not assumed: headless reports a 0px
+overlay scrollbar and therefore cannot see horizontal overflow or right-edge
+clipping at all, while headed reports the same 15px gutter Windows Chrome does.
+Fallout: a headed browser exits when its last window closes, and a persistent
+context's default about:blank page IS that window — ensureBrowser now keeps it.
+
+NETWORK POLICY. Egress is probed at daemon start, not inferred. Under a jailed
+policy a fifth bucket, `sandboxBlocked`, takes external requests the proxy
+refused: collapsed to one info line naming the hosts, demoted never deleted,
+excluded from ok. Loopback and own-origin failures are NEVER demoted — a broken
+local API cannot be excused as "the sandbox did it".
+
+CONDITIONS + PORTABILITY. Every verify carries the conditions it measured under
+(platform/display/browser/raster/egress/fonts/viewport/scheme/tz/load) and every
+finding carries `portable` | `font-dependent` | `sandbox-artifact`. Contrast and
+the cascade are computed from CSS values and survive any renderer; overflow and
+CLS are measured off rendered text and do not. `fonts: substituted` is asserted
+on evidence, so a page with no web fonts is never falsely warned.
+
+HAR BRIDGE. --record-har on a networked machine, --har in the sandbox. One file
+carries the API responses AND the font binaries, so text-metric findings stop
+being about a substitute typeface. M13 proves the round trip — including that
+the HAR run SEES a low-contrast defect the jailed run could not, because the
+stylesheet carrying it never loaded. It restores findings, not just silence.
+
+HUMAN CHANNEL. gb_watch needs a person who can reach loopback; nobody can here.
+`glassbox export` / gb_session{op:'export'} writes one self-contained HTML with
+findings, conditions and screenshots inlined. (Glassbox verified its own export
+and found a dt/dd-outside-dl violation in it. Fixed.)
+
+LIFECYCLE — three corrections, all the same shape: a check that cannot look must
+not report "clean".
+  * prockit is now dispatch over prockit-win32 + a new prockit-posix (/proc, no
+    subprocesses). Every function used to shell out to powershell.exe, so on
+    Linux they returned [] — the suite's "0 precondition clean" and "zero
+    strays" checks PASSED VACUOUSLY while browsers leaked between tests.
+  * the stray marker was the bare string 'glassbox'; point GLASSBOX_HOME
+    elsewhere and the reaper matched nothing forever. It now matches the real
+    chrome-data path, and daemons the resolved daemon entry.
+  * a zombie is not alive. kill(pid,0) succeeds on one, so a killed child read
+    as running and every "is the tree down?" loop spun to its timeout.
+  * dev's POSIX tree kill was a bare kill(-pid); a shell:true grandchild escapes
+    the group. Now the same /proc walk.
+
+STATE ROOT. The fallback chain ended in '.', making the root relative — the CLI,
+a daemon spawned with another cwd and the test runner could each compute a
+different one and then disagree about where daemon.json lives.
+
+Also: `glassbox doctor` (browser, display mode, egress, state root — all probed,
+none guessed), test/m13.mjs (31 checks), docs/01-architecture.md §11, README and
+skill/SKILL.md §9.
+
+Suite: 13 modules, 293 checks, green on Linux. Was 3/10 on m1 alone.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P4NXSfNhoxH9uz4QHU7NcJ
+

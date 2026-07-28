@@ -17,6 +17,7 @@ import { handleStyle } from './style.mjs';
 import { handleWatchUpgrade } from './screencast.mjs';
 import { gridPage, watchPage } from './watch-page.mjs';
 import { sweepOrphans } from './prockit.mjs';
+import { probeEgress, describePlatform } from '../platform.mjs';
 
 const TOKEN = crypto.randomBytes(32).toString('hex');
 const START = Date.now();
@@ -207,6 +208,14 @@ async function main() {
   }
   fs.mkdirSync(PATHS.root, { recursive: true });
   fs.mkdirSync(PATHS.sessions, { recursive: true });
+
+  // Measure egress once, at startup, before any session exists. A verify report has to state
+  // whether outbound traffic was open or jailed, and the honest way to know is to check — an agent
+  // sandbox refuses everything outside its package-registry allowlist, and guessing that from
+  // environment variables would be a claim the instrument cannot back. Cached with a TTL; a
+  // failure to probe leaves the state 'jailed', which is the conservative answer (it demotes
+  // external failures to info rather than inventing defects).
+  await probeEgress({ cacheFile: PATHS.egressCache }).catch(() => {});
 
   const mgr = createSessionManager({ idleTtlMs: IDLE_TTL, startTime: START });
   const server = http.createServer((req, res) => handle(req, res, mgr));
