@@ -153,11 +153,12 @@ structurally unreachable — not slow, not fiddly, unreachable. Start the dev se
 it with `setsid`, or use `glassbox dev`, which owns the detachment for you) and point the session
 at localhost.
 
-**Headed is the default here, and that is deliberate.** A headless container measures a 0px
-scrollbar and therefore cannot see horizontal overflow or right-edge clipping at all; headed under
-Xvfb reports the same 15px gutter a real desktop Chrome does. Pass `--headless` only if you know you
-do not care about that bug class. (The cause is Playwright's `--hide-scrollbars` headless default,
-not the renderer — see §11.1 of `docs/01-architecture.md`.)
+**Headed is the default here, and that is deliberate** — but the reason is now narrow. It buys you
+a real UA string (apps branch on `HeadlessChrome`) and GPU-dependent rendering. It used to also buy
+layout accuracy, because a headless launch measured a 0px scrollbar and so could not see `100vw`
+overflow or right-edge clipping at all. That was Playwright's `--hide-scrollbars` headless default,
+not the renderer, and `launchOptions()` now takes the flag back — so `--headless` no longer costs
+you that bug class. See §11.1 of `docs/01-architecture.md`.
 
 **`sandboxBlocked` is not a defect.** Requests to external origins that the jail refuses are split
 into their own bucket, collapsed to one info line naming the hosts, and kept out of `ok`. Requests

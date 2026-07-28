@@ -84,6 +84,19 @@ async function run() {
   check('4h layout report is ok:false + screenshot written', vl.ok === false && (vl.artifacts?.screenshots || []).length >= 1,
     `ok=${vl.ok} shots=${(vl.artifacts?.screenshots || []).length}`);
 
+  // 4i — the scrollbar-gutter overflow case, which 4a does NOT cover. layout.html's `#wide` is
+  // 3000px and overflows by ~2200px, so it is caught even by a browser that reports no scrollbar.
+  // overflow-vw.html overflows by exactly the gutter width, so it is caught ONLY if the launcher
+  // let the scrollbar exist. This check fails against every commit before the
+  // `ignoreDefaultArgs: ['--hide-scrollbars']` fix in platform.mjs, and it is the regression that
+  // pins it. Setting GLASSBOX_HIDE_SCROLLBARS=1 reproduces the old blindness on demand.
+  await goto(base + '/overflow-vw.html');
+  const vv = await verify({ screenshots: false });
+  const OV = (readReport(vv.artifacts?.report) || {}).layout?.overflow || [];
+  check('4i layout: 100vw overflows by exactly the scrollbar gutter (the case --hide-scrollbars erases)',
+    OV.some((f) => /vw/.test(JSON.stringify(f))),
+    `overflow=${OV.length} ${OV.map((f) => f.desc || '').join(',') || 'none'}`);
+
   // 5 — sourcemap.html: minified throw remaps to original.ts:4 via the inline source map
   await goto(base + '/sourcemap.html');
   const rs = await read({ channel: 'errors' });

@@ -172,11 +172,11 @@ export function chromiumPath() {
  *   headless + ignoreDefaultArgs hide-scrollbars    gutter 15px   overflow detected: yes
  *   headed                                         gutter 15px   overflow detected: yes
  *
- * So headless is not structurally blind; `launchOptions()` below is, by inheriting a flag it never
- * chose. The fix is `ignoreDefaultArgs: ['--hide-scrollbars']` there, which would make headless as
- * accurate as headed for this class and reduce this whole seam to a UA and GPU concern. NOT done
- * yet: it changes screenshot determinism, which the golden-image checks depend on, so it needs a
- * full suite run before it lands.
+ * So headless was never structurally blind; `launchOptions()` was, by inheriting a flag it never
+ * chose. FIXED there as of 2026-07-28 — headless now takes the flag back and measures the same
+ * 15px gutter headed does, which leaves this seam standing on the UA string and GPU-dependent
+ * rendering only. Those are real but much narrower than a whole bug class, so headed remains the
+ * sandbox default; it is no longer load-bearing for layout correctness.
  *
  * Xvfb costs one ~30MB process. The bug class costs more than that.
  */
@@ -229,6 +229,19 @@ export function ensureDisplay(headed) {
 export function launchOptions({ headed }) {
   const args = ['--remote-debugging-port=0'];
   const opts = { headless: !headed, args };
+
+  // Playwright appends `--hide-scrollbars` to every headless launch, unconditionally, so that
+  // visual comparisons stay deterministic across platforms with different scrollbar widths. That
+  // deletes the 15px gutter BEFORE the layout audit runs, so every horizontal-overflow check
+  // passes on pages that overflow — the check is fine, the evidence is gone. Take the flag back.
+  // See the correction above `defaultHeaded()` for the measurement.
+  //
+  // The escape hatch exists because Playwright's reason is legitimate: if you are diffing
+  // screenshots across machines, a scrollbar that appears on one and not another is noise. Set
+  // GLASSBOX_HIDE_SCROLLBARS=1 to restore the old behaviour and accept the blind spot.
+  if (!headed && process.env.GLASSBOX_HIDE_SCROLLBARS !== '1') {
+    opts.ignoreDefaultArgs = ['--hide-scrollbars'];
+  }
 
   if (IS_WIN32) {
     opts.channel = 'chromium';

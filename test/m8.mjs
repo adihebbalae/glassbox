@@ -225,6 +225,11 @@ async function run() {
         live: await dbg(s, { op: 'listeners', selector: '#live' }),
       };
     },
+    '/overflow-vw.html': async (s) => {
+      await goto(s, base + '/overflow-vw.html');
+      const v = await verify(s, { screenshots: false });
+      return { v, rep: readReport(v.artifacts?.report) || {} };
+    },
     '/dark.html': async (s) => {
       await goto(s, base + '/dark.html');
       const v = await verify(s, { themes: true });
@@ -260,7 +265,7 @@ async function run() {
       probe: (c) => (c.rep.network?.hanging || []).some((r) => /\/api\/hang/.test(r.url)),
       detail: (c) => `hanging=${(c.rep.network?.hanging || []).length}` },
 
-    { cls: 'horizontal overflow', page: '/layout.html', via: 'verify/layout',
+    { cls: 'horizontal overflow (gross — 3000px element)', page: '/layout.html', via: 'verify/layout',
       probe: (c) => (c.rep.layout?.overflow || []).length >= 1, detail: (c) => `overflow=${(c.rep.layout?.overflow || []).length}` },
     { cls: 'white-on-white text', page: '/layout.html', via: 'verify/layout contrast',
       probe: (c) => (c.rep.layout?.contrast || []).length >= 1, detail: (c) => `contrast=${(c.rep.layout?.contrast || []).length}` },
@@ -289,6 +294,14 @@ async function run() {
       probe: (c) => c.v.ok === false && (c.rep.layout?.contrast || []).length === 0
         && (c.rep.sweep || []).some((f) => String(f.combo).startsWith('dark') && /contrast/i.test(f.summary)),
       detail: (c) => `baseline=${(c.rep.layout?.contrast || []).length} sweep=${(c.rep.sweep || []).map((f) => f.combo).join(',')}` },
+
+    // The gross case above is caught even by a browser reporting no scrollbar; this one is not.
+    // It is the class that was silently uncovered until 2026-07-28 — see 4i in m3 and §11.1 of
+    // docs/01-architecture.md. GLASSBOX_HIDE_SCROLLBARS=1 turns the blindness back on.
+    { cls: 'horizontal overflow (subtle — 100vw, overflows by exactly the scrollbar gutter)',
+      page: '/overflow-vw.html', via: 'verify/layout',
+      probe: (c) => (c.rep.layout?.overflow || []).some((f) => /vw/.test(JSON.stringify(f))),
+      detail: (c) => `overflow=${(c.rep.layout?.overflow || []).length} ${(c.rep.layout?.overflow || []).map((f) => f.desc || '').join(',') || 'none'}` },
 
     { cls: 'native dialog', page: '/dialog.html', via: 'act → dialog flow',
       probe: (c) => c.click.dialog?.type === 'confirm' && c.answer.action === 'accept' && c.title === 'confirmed',

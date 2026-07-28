@@ -320,23 +320,42 @@ playwright pins a browser revision per release — so a container that ships a *
 fails channel resolution. Glassbox resolves a Chromium by path instead, or finds one under
 `PLAYWRIGHT_BROWSERS_PATH`.
 
-Headed is the sandbox default because it is *more accurate*, not less: a headless launch measures a
-0px scrollbar and therefore cannot see horizontal overflow or right-edge clipping at all, while
-headed-under-Xvfb reports the same 15px gutter a desktop Chrome does.
+Headed is the sandbox default for the UA string and for GPU-dependent rendering. It used to be the
+default for a much bigger reason — layout accuracy — and that reason is now gone, which is worth
+reading in full because it is the most instructive mistake in this repo.
 
-> **Correction, 2026-07-28.** This used to say the cause was Chromium's overlay scrollbars. It is
-> not. Playwright appends `--hide-scrollbars` to every headless launch unconditionally, so that
-> visual comparisons stay deterministic — a sound default for screenshot testing, a destructive one
-> for layout verification. Measured, 800×600, page with a `100vw` child: default headless gutter
-> **0px** (overflow undetected), headless with `ignoreDefaultArgs: ['--hide-scrollbars']` **15px**
-> (detected), headed **15px** (detected). Headless is not blind; this launcher was, by inheriting a
-> flag it never chose. Anything built on Playwright headless inherits it too.
+> **Correction, 2026-07-28.** This section used to claim that headless Chromium reports a 0px
+> *overlay* scrollbar, and that headless therefore could not see horizontal overflow or right-edge
+> clipping at all. The observation was real. The cause was wrong.
 >
-> Left standing for now because removing the flag changes screenshot determinism, which the
-> golden-image checks depend on — it needs a full suite run first. It is the honest example of the
-> line four paragraphs down: *a finding without its conditions is a claim the instrument cannot
-> support.* This tool made that exact mistake, on its own headline finding, and the check that
-> should have caught it passed against evidence that had already been deleted.
+> Playwright appends `--hide-scrollbars` to every headless launch, unconditionally, so that visual
+> comparisons stay deterministic across platforms with different scrollbar widths — a sound default
+> for screenshot testing and a destructive one for layout verification. Measured, 800×600, a page
+> with a `100vw` child:
+>
+> | launch config | `innerWidth − clientWidth` | overflow detected |
+> | --- | --- | --- |
+> | headless, Playwright defaults | **0px** | ❌ |
+> | headless + `ignoreDefaultArgs: ['--hide-scrollbars']` | **15px** | ✅ |
+> | headed | **15px** | ✅ |
+>
+> Headless was never blind. This launcher was, by inheriting a flag it never chose — and so is
+> anything else built on Playwright or Puppeteer headless. **Fixed:** `launchOptions()` now takes
+> the flag back, and `GLASSBOX_HIDE_SCROLLBARS=1` restores the old behaviour for anyone diffing
+> screenshots across machines, where Playwright's reasoning is legitimate.
+>
+> Two things about how this was found are more useful than the finding:
+>
+> - **The check that should have caught it passed.** The only seeded overflow fixture was a 3000px
+>   element, which overflows by ~2200px and is visible with or without a gutter. The `100vw` case —
+>   which overflows by *exactly* the scrollbar width, and is the only case the flag erases — was
+>   never seeded. So 293 checks went green on a configuration that could not see the class.
+>   `test/bugzoo/overflow-vw.html` now seeds it, and the check fails against every commit before
+>   this one.
+> - **It is the exact failure this tool exists to catch** — an assertion that passed because it had
+>   nothing left to inspect, which is defect class W3 in `docs/defects-*.md`. Committed on the
+>   headline finding, in the verification tool, for months. That is what the line below means in
+>   practice: *a finding without its conditions is a claim the instrument cannot support.*
 
 Every verify carries a `conditions` block and every finding a `portability` tag — `portable`
 (computed from CSS values, the cascade, the DOM, HTTP status), `font-dependent` (measured off

@@ -38,11 +38,18 @@ npm run test:m3       # or any single milestone
 
 Every proof drives the real CLI and daemon against a real Chromium, and every one ends by
 asserting that `kill-all` leaves zero orphan processes. There are no mocks — a mocked browser
-cannot tell you that a default headless launch reports a 0px scrollbar (and a real one, run against
-a real Chromium, is what eventually told us *why* — Playwright's `--hide-scrollbars`, not the
-renderer; see §11.1 of `docs/01-architecture.md`).
+cannot tell you that a default headless launch measures a 0px scrollbar (and a real one is what
+eventually told us *why*: Playwright's `--hide-scrollbars`, not the renderer; see §11.1 of
+`docs/01-architecture.md`).
 
-Two consequences worth knowing before you write a test here:
+Three consequences worth knowing before you write a test here:
+
+- **A fixture must be sensitive to the failure it claims to cover.** This is the one that cost us
+  most. The overflow assertion passed for months against a 3000px element, which overflows by
+  ~2200px whether or not a scrollbar gutter exists — so it went green in a configuration that could
+  not see `100vw` overflow at all, which is the case anyone actually hits. Green against an
+  insensitive fixture is not coverage. When you add a check, ask what would have to break for it to
+  fail, and then make that happen on purpose.
 
 - **Never assert after a fixed sleep.** The suite spawns daemons, browsers, MCP shims and dev
   servers; under full-suite load anything you guessed a duration for will eventually race. Poll for
@@ -53,8 +60,14 @@ Two consequences worth knowing before you write a test here:
 
 ## Bug zoo
 
-`test/bugzoo/` is a seeded-bug site: 17 deliberate defect classes, plus a deliberately **clean**
+`test/bugzoo/` is a seeded-bug site: 18 deliberate defect classes, plus a deliberately **clean**
 page as the false-positive check, plus every page seeded from a real field defect.
+
+Note that two of the eighteen are the *same* finding class by different mechanisms —
+`layout.html`'s 3000px element and `overflow-vw.html`'s `100vw` child are both horizontal overflow,
+and only the second is sensitive to the scrollbar gutter. That pair is deliberate and it is the
+template for the point above: when a class has a subtle mechanism and a gross one, seed both, or
+your matrix will report coverage you do not have.
 
 To add a case:
 

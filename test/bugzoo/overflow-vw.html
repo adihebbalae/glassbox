@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>bugzoo — 100vw overflow (the scrollbar-gutter case)</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; }
+
+  /* seed: horizontal overflow, but the SUBTLE mechanism — the one layout.html does not cover.
+     layout.html seeds `#wide { width: 3000px }`, which overflows an 800px viewport by ~2200px and
+     is detectable whether or not a scrollbar gutter exists. This page overflows by *exactly* the
+     scrollbar width, because `100vw` counts the gutter and the containing block does not. That is
+     the real-world version of this bug: a full-bleed hero or banner that looks fine until a page
+     grows tall enough to need a vertical scrollbar.
+
+     It is therefore the fixture that a browser launched with `--hide-scrollbars` CANNOT see — with
+     no gutter, 100vw equals the content width and this page is genuinely clean. That was the state
+     of this project for months: the overflow assertions passed, and the only overflow fixture was
+     gross enough to survive the blindness. See §11.1 of docs/01-architecture.md. */
+  #vw { width: 100vw; height: 48px; background: #cfe3ff; }
+
+  /* Load-bearing, not decoration: 100vw only overflows when a vertical scrollbar is actually
+     present. Without this the page is clean in every configuration and the fixture proves nothing. */
+  .tall { height: 1600px; }
+</style>
+</head>
+<body>
+  <div id="vw">width:100vw — overflows by exactly the scrollbar width</div>
+  <p>Everything else on this page is inside the viewport. The only horizontal overflow is
+     <code>#vw</code>, and it overflows by the width of the vertical scrollbar and nothing more.</p>
+  <div class="tall"></div>
+</body>
+</html>

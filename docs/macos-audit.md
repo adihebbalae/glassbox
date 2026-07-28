@@ -420,10 +420,17 @@ crash, and it needs a real measurement (§8.2) before any fix is designed. The h
 is for the conditions block to state the measured scrollbar width rather than implying the Windows
 gutter.
 
-Note the practical ordering this creates: on Windows and Linux the fix is one launch option; on
-macOS it may require synthesising the gutter (e.g. forcing a classic scrollbar via a CDP
-`Emulation` override or a stylesheet) or accepting a documented `portability` downgrade on that
-finding class. Do not ship a macOS fix that reports 15px without measuring one.
+Note the practical ordering this creates, and that **the Windows/Linux half is now done** — as of
+2026-07-28 `launchOptions()` passes `ignoreDefaultArgs: ['--hide-scrollbars']`, so headless there
+measures the same 15px gutter headed does and `test/bugzoo/overflow-vw.html` pins it.
+
+That makes macOS the *only* remaining platform where this bug class may be undetectable, and it
+raises the priority of F7 rather than lowering it: the shared cause is fixed, so anything still
+missing on a Mac is now specifically a macOS problem and cannot be waved at as a general headless
+caveat. The fix there is not a launch flag. It is either synthesising the gutter (forcing a classic
+scrollbar via a CDP `Emulation` override or an injected stylesheet) or accepting a documented
+`portability` downgrade on the finding class. **Do not ship a macOS fix that reports 15px without
+measuring one first** — that would be the same mistake this whole section exists to record.
 
 ### F8. Blind process-group kill  🟡 RISKY
 

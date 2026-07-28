@@ -206,15 +206,20 @@ swap underneath, all decided in `src/platform.mjs` and nowhere else:
 
 ### 11.1 Headed is the sandbox default
 
-Measured, not assumed: a headless launch reports a scrollbar width of **0px**; headed under Xvfb
-reports **15px**, the same reserved gutter Windows Chrome gives you. A 0px scrollbar makes `100vw`
-horizontal overflow and right-edge clipping *undetectable* — the exact bug class the layout audit
-exists to catch. Headless also leaves `HeadlessChrome` in the UA, which apps branch on. Xvfb costs
-one ~30MB process; the bug class costs more.
+Headed remains the sandbox default for two reasons: headless leaves `HeadlessChrome` in the UA,
+which apps branch on, and GPU-dependent rendering differs. Xvfb costs one ~30MB process, which is
+cheap enough for both.
 
-**Correction, 2026-07-28 — the parenthetical here used to read "(overlay scrollbars)" and that was
-wrong.** The cause is `--hide-scrollbars`, which Playwright appends to every headless launch
-unconditionally so visual comparisons stay deterministic. Re-measured, 800×600, `100vw` child:
+It used to rest on a third and much larger reason — that headless could not see `100vw` horizontal
+overflow or right-edge clipping at all — and that reason was **the right measurement attached to
+the wrong cause**. The record, because the mistake is more instructive than the finding:
+
+**Correction, 2026-07-28.** This section read "a headless launch reports a scrollbar width of 0px
+(overlay scrollbars)". The 0px was real; overlay scrollbars were not the cause. It is
+`--hide-scrollbars`, which Playwright appends to every headless launch unconditionally
+(`playwright-core` `coreBundle.js:42539`, `:42744`, guarded only by `if (options.headless)`) so
+that visual comparisons stay deterministic across platforms with different scrollbar widths.
+Re-measured, 800×600, `100vw` child:
 
 | launch config | gutter | overflow detected |
 | --- | --- | --- |
@@ -222,12 +227,25 @@ unconditionally so visual comparisons stay deterministic. Re-measured, 800×600,
 | headless + `ignoreDefaultArgs: ['--hide-scrollbars']` | 15px | yes |
 | headed | 15px | yes |
 
-So headless is not structurally blind — `launchOptions()` is, by inheriting a flag it never chose,
-and this section attributed a launcher default to the renderer. The measurement was right and the
-mechanism was not, which is the failure mode this codebase files as a **vacuous pass**: the check
-ran against evidence that had already been removed. Removing the flag is the better fix than the
-headed default and is not yet done, because it changes screenshot determinism and needs a full
-suite run.
+So headless was never structurally blind. `launchOptions()` was, by inheriting a flag it never
+chose, and this section blamed the renderer for a launcher default. **Fixed the same day:**
+`launchOptions()` now passes `ignoreDefaultArgs: ['--hide-scrollbars']` when headless, with
+`GLASSBOX_HIDE_SCROLLBARS=1` as the opt-out for anyone diffing screenshots across machines — where
+Playwright's reasoning is correct and the blind spot is an acceptable trade. Full suite green
+before and after (293 checks, then 295).
+
+**Why the suite did not catch it, which is the part worth keeping.** The only seeded overflow
+fixture was `layout.html`'s `#wide { width: 3000px }` — it overflows an 800px viewport by ~2200px
+and is detected with or without a gutter. The case the flag actually erases is one that overflows
+by *exactly* the scrollbar width, and it was never seeded. So the overflow assertion passed in a
+configuration that could not see the class it was named after: a **vacuous pass** (defect class W3),
+committed against the project's own headline finding. `test/bugzoo/overflow-vw.html` now seeds the
+`100vw` case; `m3` check 4i and the `m8` seed matrix pin it, and both fail against every commit
+before this one — verifiable on demand with `GLASSBOX_HIDE_SCROLLBARS=1`.
+
+The general rule this pays for: **an assertion is only as good as the fixture's sensitivity to the
+thing it claims to test.** A fixture gross enough to survive the failure mode you care about is not
+coverage, it is decoration.
 
 Fallout worth recording: a headed Chromium exits when its last window closes, and a persistent
 context's default `about:blank` page IS that window. `ensureBrowser` used to close it
