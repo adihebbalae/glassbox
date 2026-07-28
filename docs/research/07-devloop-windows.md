@@ -440,10 +440,9 @@ discovery+depth-probe function makes one unnecessary.
 - [dkorolev/pidlock](https://github.com/dkorolev/pidlock)
 - [Orphaned Node.js process cleanup field notes](https://medium.com/@arunangshudas/5-tips-for-cleaning-orphaned-node-js-processes-196ceaa6d85e)
 
-### Internal reference (not public — read directly for grounding, not a literature source)
+### Internal reference (a private prior-art codebase, not a public literature source)
 
-- `C:\Users\boomb\browser-harness\src\browser_harness\_ipc.py` — Windows TCP-loopback +
-  bearer-token IPC; POSIX AF_UNIX + `chmod 0600`; atomic port-file write; spawn flags.
-- `C:\Users\boomb\browser-harness\src\browser_harness\admin.py` — `ensure_daemon()` /
-  `restart_daemon()`: handshake liveness, CDP depth-probe, PID-reuse-safe kill via
-  `GetProcessTimes` fingerprinting on Windows.
+- `browser-harness/_ipc.py` — Windows TCP-loopback + bearer-token IPC; POSIX AF_UNIX +
+  `chmod 0600`; atomic port-file write; spawn flags.
+- `browser-harness/admin.py` — `ensure_daemon()` / `restart_daemon()`: handshake liveness,
+  CDP depth-probe, PID-reuse-safe kill via `GetProcessTimes` fingerprinting on Windows.

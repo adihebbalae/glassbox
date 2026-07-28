@@ -1,15 +1,18 @@
 // LIVE check against a real framework — NOT part of `npm test` (it needs a real project on disk,
 // possibly an `npm install`, and it verifies a site nobody controls, so it can never be a gate).
-// Run it by hand after touching the dev loop or the verify engine:
+// Run it by hand, pointed at any dev-server project you have, after touching the dev loop or the
+// verify engine:
 //
-//   node test/live-wcii.mjs [--cwd <project dir>]
+//   node test/live-devserver.mjs --cwd <project dir>
+//   GLASSBOX_LIVE_CWD=<project dir> npm run test:live
 //
-// It drives the shipped CLI end to end against Adi's Astro project (WCII): `glassbox dev` spawns
-// `astro dev`, discovers the ready URL out of Astro's own banner (`┃ Local  http://localhost:4321/`),
-// attaches the session, runs one verify, then this script takes a full-page screenshot and stops the
-// whole tree. The PASS/FAIL gates are the mechanics — URL discovery, attach, verify completion,
-// screenshot on disk, clean shutdown, zero orphans. The FINDINGS are reported, never gated: a real
-// site's ok:false is information about the site, not a failure of the tool.
+// It drives the shipped CLI end to end: `glassbox dev` spawns the project's dev server, discovers
+// the ready URL out of that server's own banner (Astro's `┃ Local  http://localhost:4321/`, Vite's
+// `➜  Local:`, Next's `- Local:`), attaches the session, runs one verify, then this script takes a
+// full-page screenshot and stops the whole tree. The PASS/FAIL gates are the mechanics — URL
+// discovery, attach, verify completion, screenshot on disk, clean shutdown, zero orphans. The
+// FINDINGS are reported, never gated: a real site's ok:false is information about the site, not a
+// failure of the tool.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,15 +23,18 @@ import { listGlassboxChromium, processAlive } from '../src/daemon/prockit.mjs';
 const CLI = fileURLToPath(new URL('../src/cli.mjs', import.meta.url));
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Candidates, first one holding a package.json wins: an explicit --cwd, the glassbox-build worktree,
-// then the WCII repo root (the worktree is a bare checkout dir on this machine — see the report).
+// Candidates, first one holding a package.json wins: an explicit --cwd, then GLASSBOX_LIVE_CWD.
+// There is no default — this test needs a project you control, so it says so rather than guessing.
 const argCwd = (() => { const i = process.argv.indexOf('--cwd'); return i > 0 ? process.argv[i + 1] : null; })();
 const CANDIDATES = [
   argCwd,
   process.env.GLASSBOX_LIVE_CWD,
-  'C:/Users/boomb/Documents/_Projects/WCII/.claude/worktrees/glassbox-build',
-  'C:/Users/boomb/Documents/_Projects/WCII',
 ].filter(Boolean);
+if (!CANDIDATES.length) {
+  console.error('live: no project given. Pass --cwd <dir> or set GLASSBOX_LIVE_CWD to a directory');
+  console.error('live: with a package.json and a `dev` script (Astro, Vite, Next, … all work).');
+  process.exit(2);
+}
 
 const results = [];
 function check(name, cond, detail = '') {

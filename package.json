@@ -1,11 +1,51 @@
 {
   "name": "glassbox",
   "version": "0.1.0",
-  "description": "Instrumented local browser daemon for agentic UI verification",
-  "main": "index.js",
+  "description": "Instrumented local browser daemon for agentic UI verification — named parallel sessions, one-call verify bundles, and a white-box debug plane, over both MCP and a CLI",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "browser",
+    "chromium",
+    "cdp",
+    "playwright",
+    "agent",
+    "ai",
+    "claude-code",
+    "verification",
+    "accessibility",
+    "visual-qa",
+    "debugging",
+    "devtools"
+  ],
+  "homepage": "https://github.com/adihebbalae/glassbox#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adihebbalae/glassbox.git"
+  },
+  "bugs": {
+    "url": "https://github.com/adihebbalae/glassbox/issues"
+  },
+  "author": "Adithya Hebbalae",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "directories": {
     "doc": "docs"
   },
+  "bin": {
+    "glassbox": "./src/cli.mjs"
+  },
+  "files": [
+    "src/",
+    "skill/",
+    "vendor/",
+    "README.md",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md"
+  ],
   "scripts": {
     "test": "node test/m1.mjs && node test/m2.mjs && node test/m3.mjs && node test/m4.mjs && node test/m5.mjs && node test/m6.mjs && node test/m7.mjs && node test/m8.mjs && node test/m9.mjs && node test/m10.mjs && node test/m11.mjs && node test/m12.mjs && node test/m13.mjs",
     "test:m1": "node test/m1.mjs",
@@ -21,14 +61,7 @@
     "test:m11": "node test/m11.mjs",
     "test:m12": "node test/m12.mjs",
     "test:m13": "node test/m13.mjs",
-    "test:live": "node test/live-wcii.mjs"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "module",
-  "bin": {
-    "glassbox": "./src/cli.mjs"
+    "test:live": "node test/live-devserver.mjs"
   },
   "dependencies": {
     "playwright": "^1.61.1"

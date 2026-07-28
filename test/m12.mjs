@@ -34,6 +34,14 @@ function cli(args, client, timeout = 90000) {
 }
 const json = (r) => { try { return JSON.parse(r.stdout.trim().split('\n').pop()); } catch { return null; } };
 
+/** Poll until cond() holds or the deadline passes; returns whether it held. Fixed sleeps raced
+ *  this file under full-suite load — every wait that gates an assertion goes through here. */
+async function waitFor(cond, ms = 15000, step = 100) {
+  const dl = Date.now() + ms;
+  while (Date.now() < dl) { if (cond()) return true; await delay(step); }
+  return cond();
+}
+
 const results = [];
 function check(name, cond, detail = '') {
   results.push({ name, pass: !!cond });
@@ -149,10 +157,17 @@ async function run() {
   check('e2 …so a sibling agent\'s bare kill-all cannot reap the MCP agent\'s sessions',
     vsMcp?.code === CODES.FOREIGN_SESSIONS && vsMcp.foreign?.[0]?.client === `mcp-${shim.pid}`,
     `code=${vsMcp?.code} foreign=${vsMcp?.foreign?.[0]?.client}`);
+  // The shim must be fully GONE before f asserts on the single-agent path: while it lives it still
+  // owns sessions, and a bare kill-all would — correctly — refuse them with FOREIGN_SESSIONS. A
+  // fixed 300ms raced the shim's exit under full-suite load and took g down with it (no new daemon
+  // spawns, so g's recency window is never inherited). Wait for the real signals instead.
   shim.stdin.end();
-  await delay(300);
+  await Promise.race([
+    new Promise((r) => shim.once('exit', r)),
+    delay(10000).then(() => { try { shim.kill(); } catch { /* already gone */ } }),
+  ]);
   cli(['kill-all', '--force'], null);
-  await delay(500);
+  await waitFor(() => !fs.existsSync(PATHS.daemonFile));
 
   // ===== f — the single-agent path is untouched ===============================
   cli(['session', 'open', 'solo'], null);            // no GLASSBOX_CLIENT at all
@@ -162,6 +177,11 @@ async function run() {
     `mode=${solo?.mode} daemon.json=${fs.existsSync(PATHS.daemonFile)}`);
 
   // ===== g — stale foreign sessions must never block a clean slate ============
+  // g needs its OWN daemon so the short recency window below is actually inherited. f's assertion
+  // has already been recorded, so forcing a clean slate here isolates g from f rather than hiding
+  // anything: if f left a daemon standing, that is f's failure to report, not g's to inherit.
+  cli(['kill-all', '--force'], null);
+  await waitFor(() => !fs.existsSync(PATHS.daemonFile));
   process.env.GLASSBOX_ACTIVE_WINDOW_MS = '800'; // the daemon we are about to spawn inherits it
   cli(['session', 'open', 'stale1'], A);
   await delay(1400);                              // now older than the window

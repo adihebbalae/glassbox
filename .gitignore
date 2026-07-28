@@ -2,3 +2,23 @@ node_modules/
 dist/
 .sessions/
 *.log
+
+# local scratch / packaging junk
+_to_delete/
+*.tgz
+*.patch
+*.har
+report.html
+
+# editor + OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# secrets
+.env
+.env.*
+
+# launch copy — never published
+launch/

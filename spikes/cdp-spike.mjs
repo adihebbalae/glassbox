@@ -7,7 +7,10 @@ import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const CHROME = 'C:/Users/boomb/AppData/Local/ms-playwright/chromium-1223/chrome-win64/chrome.exe';
+// Frozen research spike. Point GLASSBOX_CHROME at any Chromium binary to re-run it — e.g. the
+// one `npx playwright install chromium` caches under %LOCALAPPDATA%\ms-playwright (or ~/.cache).
+const CHROME = process.env.GLASSBOX_CHROME;
+if (!CHROME) { console.error('spike: set GLASSBOX_CHROME to a chromium binary path'); process.exit(2); }
 const t0 = Date.now();
 const stamp = () => `[+${String(Date.now() - t0).padStart(5)}ms]`;
 
@@ -102,7 +105,7 @@ console.log(stamp(), `titles: A='${titleA}' B='${titleB}' | leak into B: localSt
 
 // screenshot proof
 const shot = await send('Page.captureScreenshot', { format: 'png' }, A);
-const outPng = 'C:/Users/boomb/Documents/_Projects/glassbox/spikes/spike-shot.png';
+const outPng = new URL('spike-shot.png', import.meta.url);
 writeFileSync(outPng, Buffer.from(shot.data, 'base64'));
 console.log(stamp(), `screenshot: ${Math.round(shot.data.length * 0.75 / 1024)}KB -> spike-shot.png`);
 

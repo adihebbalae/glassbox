@@ -10,6 +10,7 @@
 // trap when recording a HAR against a real site, and it is why the recording leg asserts on
 // response status rather than on entry count.
 import http from 'node:http';
+import { pathToFileURL } from 'node:url';
 
 // A minimal but structurally valid WOFF2 header. Nothing renders it; the assertions are about
 // whether the bytes survive the record → replay round trip.
@@ -43,6 +44,10 @@ export function startThirdParty(port = 0) {
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// `file://${process.argv[1]}` is a POSIX-only main-module test: on win32 argv[1] is
+// `C:\path\to\file`, so it builds `file://C:\path\…` and never matches import.meta.url's
+// `file:///C:/path/…`. This file then exited silently having started nothing, and m13 failed with
+// "printed no URL in 10s" on Windows only. pathToFileURL is the portable form.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   startThirdParty(Number(process.argv[2]) || 0).then((s) => console.log(s.base));
 }

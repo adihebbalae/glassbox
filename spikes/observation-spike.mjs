@@ -6,7 +6,10 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const CHROME = 'C:/Users/boomb/AppData/Local/ms-playwright/chromium-1223/chrome-win64/chrome.exe';
+// Frozen research spike. Point GLASSBOX_CHROME at any Chromium binary to re-run it — e.g. the
+// one `npx playwright install chromium` caches under %LOCALAPPDATA%\ms-playwright (or ~/.cache).
+const CHROME = process.env.GLASSBOX_CHROME;
+if (!CHROME) { console.error('spike: set GLASSBOX_CHROME to a chromium binary path'); process.exit(2); }
 const URL_UNDER_TEST = 'https://wcii.pages.dev/';
 const t0 = Date.now();
 const stamp = () => `[+${String(Date.now() - t0).padStart(5)}ms]`;
@@ -108,7 +111,7 @@ await send('Page.stopScreencast', {}, S);
 console.log(stamp(), `screencast: ${frames} frames in ~1.5s of scrolling, ` +
   `${Math.round(bytes / 1024)}KB total (~${Math.round(bytes / frames / 1024)}KB/frame)`);
 
-writeFileSync('C:/Users/boomb/Documents/_Projects/glassbox/spikes/ax-distilled-sample.txt',
+writeFileSync(new URL('ax-distilled-sample.txt', import.meta.url),
   axDistilled.slice(0, 4000));
 await send('Browser.close');
 await new Promise(r => proc.on('exit', r));

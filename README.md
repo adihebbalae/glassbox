@@ -1,70 +1,93 @@
 # Glassbox
 
-**An instrumented local browser daemon for agentic UI verification.** A coding agent edits web
-code and then has to answer, without a human in the loop: *does the site actually work and look
-right?* Glassbox is the instrument that answers it — a real Chromium, owned by a daemon, exposed as
-named parallel sessions with a one-call verification bundle and a white-box debugger, through both
-an MCP tool surface and a CLI.
+**An instrumented local browser daemon for agentic UI verification.**
 
-It is **not** a general web agent, a scraper, or a test runner. It verifies the UI you are building,
-on localhost, right now.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-green.svg)](https://nodejs.org)
+[![MCP](https://img.shields.io/badge/MCP-14%20tools-8A2BE2.svg)](#mcp-setup-claude-code)
+[![Status](https://img.shields.io/badge/status-v0.1.0-orange.svg)](docs/BUILD-LEDGER.md)
 
-Status: **v0.1.0**, first complete build. Windows-first (developed and proven on Windows 11 / Node
-24), and since M13 also **sandbox-capable**: the same codebase runs inside an ephemeral Linux agent
-container behind a platform seam, with the full suite (13 modules, 293 checks) green on both. The
-process reaper is now two implementations behind one dispatch — `taskkill`/WMI on win32, `/proc` on
-POSIX — rather than a win32-only file that silently answered "nothing found" everywhere else.
+Your coding agent just edited the checkout page. Now it has to answer, with no human in the
+loop: *does the site actually work and look right?* Today it guesses — or it burns fifteen tool
+calls stitching together a screenshot, a console dump, and a hopeful `networkidle`.
+
+Glassbox is the instrument that answers the question in one call:
+
+```console
+$ glassbox verify -s checkout
+verify ISSUES — settled [COLD load] at http://localhost:4321/checkout
+  counts: consoleErrors=1 pageerr=0 net(failed=0 http=2 hang=0 mixed=0) a11y=1 layout=3
+  [error/console] console.error: Cannot read properties of null (reading 'value') (cart.js:12)
+  [warn/layout] Low text contrast: p#total — contrast ratio 1.04:1 (needs 4.5:1)
+  [warn/layout] Horizontal overflow: .promo-row overflows viewport by 38px
+  [warn/a11y] button.icon-only has no accessible name
+  report: C:\Users\you\AppData\Local\glassbox\sessions\checkout\reports\verify-1.json
+  shots: C:\Users\you\AppData\Local\glassbox\sessions\checkout\shots\verify-1.webp
+  2841ms
+```
+
+One command. Console + page errors + network taxonomy + layout pathology + accessibility +
+build-error overlay + screenshots, as one structured report — with the source maps already
+applied and the artifacts written to disk as **paths**, not inline images.
+
+It is **not** a general web agent, a scraper, or a test runner. It verifies the UI you are
+building, on localhost, right now.
 
 ---
 
-## Why this exists
+## Why not just use Playwright MCP or Chrome DevTools MCP?
 
-Every existing tool either drives a browser it doesn't own (extensions, harnesses), owns one but
-hides it inside a test-script process (Playwright), or exposes it to agents without instrumentation
-depth (the MCP servers). Five gaps, each documented and unfilled elsewhere — this is the whole
-design brief (`docs/00-first-principles.md`, `docs/01-architecture.md` §0):
+Use them! They are excellent and Glassbox is not trying to replace them. But they are built to
+*drive* and *profile* a browser, and neither is built for the specific loop of "an agent changed
+some CSS and needs to know what broke." Verified against their published tool references, July
+2026:
+
+| | [chrome-devtools-mcp][cdm] | [playwright-mcp][pwm] | **Glassbox** |
+| --- | :---: | :---: | :---: |
+| Named parallel **storage-isolated** sessions in one process | pages, not isolated contexts | one process per isolated client | **yes — the default topology** |
+| One-call verify bundle (console+net+layout+a11y+overlay+shots) | `lighthouse_audit` is the closest | — | **yes** |
+| Breakpoints, paused-frame locals, stepping | — | — | **yes** |
+| CSS cascade with computed specificity (`✓won / ✗overridden`) | — | — | **yes** |
+| JS + CSS coverage (`count:0` = never ran) | — | — | **yes** |
+| Same verbs as a **CLI** *and* an MCP server, one daemon | MCP only | MCP only | **yes** |
+| Performance traces, heap snapshots, extensions | **yes** | — | — |
+| Cross-browser (Firefox / WebKit) | — | **yes** | — |
+| Network mocking / routing, video, tracing | — | **yes** | — |
+
+The last three rows are the honest other half: if you need a flame chart, a heap diff, or WebKit,
+those tools do things Glassbox does not and will not.
+
+[cdm]: https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/tool-reference.md
+[pwm]: https://github.com/microsoft/playwright-mcp
+
+### The design brief, in five lines
+
+Underneath all of it: the browser's state lives **outside** the agent's conversation. Sessions are
+addressable by name, journals are readable cold, and a compacted or forked agent loses nothing.
+Full reasoning in `docs/00-first-principles.md` and `docs/01-architecture.md` §0.
 
 1. **Named parallel isolated sessions** as the default topology. Ten subagents, ten sessions, one
    browser process, zero storage bleed.
-2. **One-call verification bundles.** `verify` = console + network taxonomy + layout pathology +
-   a11y + build-error overlay + screenshots, as one structured report. Not fifteen fragile steps.
+2. **One-call verification bundles.** Not fifteen fragile steps.
 3. **A white-box debug plane.** Breakpoints, paused-frame inspection, coverage, and a cascade
-   "why does this look wrong" tool with computed specificity.
+   "why does this look wrong" tool with real specificity.
 4. **CLI + MCP duality on one daemon.** Same verbs, same endpoints, two faces.
-5. **An artifact directory per session** on disk. Screenshots and reports are returned as *paths* —
-   inline images cost 10–20× the tokens in Claude Code.
-
-Underneath all five: the browser's state lives **outside** the agent's conversation. Sessions are
-addressable by name, journals are readable cold, and a compacted or forked agent loses nothing.
+5. **An artifact directory per session** on disk — screenshots and reports come back as *paths*,
+   because inline images cost 10–20× the tokens in Claude Code.
 
 ---
 
 ## Install
 
 ```bash
-git clone <this repo> && cd glassbox
+git clone https://github.com/adihebbalae/glassbox && cd glassbox
 npm install                      # one runtime dep: playwright
 npx playwright install chromium  # the browser binary itself
+npm link                         # optional: puts `glassbox` on your PATH
 ```
 
-Node 24 (Node 22+ should work; 24 is what the suite runs on). Optional: `npm link` to put
-`glassbox` on your PATH — every example below otherwise works as `node src/cli.mjs …`.
-
-### In a container
-
-`npx playwright install` needs network an agent sandbox's allowlist usually does not permit, and
-playwright pins a browser revision per release — so a container that ships a *different* revision
-fails channel resolution. Glassbox resolves a Chromium by path instead. Point it at one, or let it
-find one under `PLAYWRIGHT_BROWSERS_PATH`:
-
-```bash
-glassbox doctor        # browser, display mode, egress, state root — all probed, none guessed
-```
-
-`doctor` is the first thing to run anywhere new. See §"Sandbox" below and `docs/01-architecture.md`
-§11 for what changes and why.
-
----
+Node 22+ (the suite runs on 24). Without `npm link`, every example below works as
+`node src/cli.mjs …`.
 
 ## 60-second quickstart
 
@@ -75,13 +98,8 @@ glassbox session open checkout
 # 2. point it at your dev server (waits for real quiescence, not networkidle)
 glassbox goto http://localhost:4321/checkout -s checkout
 
-# 3. THE call: one verify, everything at once
+# 3. THE call
 glassbox verify -s checkout
-#   verify ISSUES — settled at http://localhost:4321/checkout
-#     counts: console=1 pageerr=0 net(failed=0 http=2 hang=0 mixed=0) a11y=1 layout=3
-#     [error/console] console.error: Cannot read properties of null (reading 'value') (cart.js:12)
-#     [warn/layout]  Low text contrast: p#total — contrast ratio 1.04:1 …
-#     report: C:\Users\you\AppData\Local\glassbox\sessions\checkout\reports\verify-1.json
 
 # 4. let a human watch (live screencast + click/key takeover)
 glassbox watch checkout
@@ -99,12 +117,59 @@ glassbox dev --cmd "npm run dev" --cwd . -s dev
 # q + Enter to stop
 ```
 
+## MCP setup (Claude Code)
+
+Add to your project's `.mcp.json` (or `~/.claude.json` under `mcpServers`):
+
+```json
+{
+  "mcpServers": {
+    "glassbox": {
+      "command": "node",
+      "args": ["/path/to/glassbox/src/cli.mjs", "mcp"]
+    }
+  }
+}
+```
+
+The shim is stateless and auto-starts the shared daemon on first use, so one shim per Claude
+session (or subagent) is cheap and safe — the browser state lives in the daemon, not in the shim.
+
+Fourteen tools: `gb_session`, `gb_goto`, `gb_act`, `gb_observe`, `gb_read`, `gb_verify`,
+`gb_screenshot`, `gb_style`, `gb_eval`, `gb_wait`, `gb_debug`, `gb_coverage`, `gb_dialog`,
+`gb_watch`.
+
+**`skill/SKILL.md` is the agent-facing manual** — session-per-agent pattern, verify-first loop,
+debug recipes, PAUSED-lane rules. Copy it into `.claude/skills/` (or point your agent at it) so
+the model learns the workflow, not just the schemas.
+
+---
+
+## Status, and what is not proven
+
+v0.1.0, first complete build. Being honest about the edges, because a verification tool that
+overstates itself is worse than useless:
+
+- **Windows 11 / Node 24** — developed here. Full suite green: **13 modules, 293 checks**.
+- **Linux, in an agent sandbox** — proven in M13. The same codebase runs in an ephemeral
+  container behind a platform seam, full suite green. The process reaper is two implementations
+  behind one dispatch (`taskkill`/WMI on win32, `/proc` on POSIX).
+- **macOS** — *unproven, not unsupported.* It takes the same POSIX path Linux does, so it very
+  likely works, but nobody has run it. If you have a Mac, `npm test` and an issue either way is
+  the single most useful contribution right now.
+- **No CI yet.** The suite drives a real Chromium for ~17 minutes; wiring that into Actions is
+  the next infrastructure job.
+
+Also deliberately out of scope for v1: cloud/remote browsers, stealth or CAPTCHA anything,
+cross-engine (BiDi) abstraction, performance-trace UI, scraping ergonomics, and React/Vue
+component-tree inspection (version-fragile).
+
 ---
 
 ## CLI verbs
 
-`CLI verbs = MCP tools = the same daemon endpoints.` Add `--json` to any command for machine output;
-`-s <session>` (or `GLASSBOX_SESSION`) names the session.
+`CLI verbs = MCP tools = the same daemon endpoints.` Add `--json` to any command for machine
+output; `-s <session>` (or `GLASSBOX_SESSION`) names the session.
 
 **Sessions & lifecycle**
 
@@ -164,32 +229,6 @@ glassbox dev --cmd "npm run dev" --cwd . -s dev
 
 ---
 
-## MCP setup (Claude Code)
-
-Add to your project's `.mcp.json` (or `~/.claude.json` under `mcpServers`):
-
-```json
-{
-  "mcpServers": {
-    "glassbox": {
-      "command": "node",
-      "args": ["C:/path/to/glassbox/src/cli.mjs", "mcp"]
-    }
-  }
-}
-```
-
-The shim is stateless and auto-starts the shared daemon on first use, so one shim per Claude session
-(or subagent) is cheap and safe — the browser state lives in the daemon, not in the shim.
-
-Fourteen tools: `gb_session`, `gb_goto`, `gb_act`, `gb_observe`, `gb_read`, `gb_verify`,
-`gb_screenshot`, `gb_style`, `gb_eval`, `gb_wait`, `gb_debug`, `gb_coverage`, `gb_dialog`,
-`gb_watch`. **`skill/SKILL.md` is the agent-facing manual** — session-per-agent pattern,
-verify-first loop, debug recipes, PAUSED-lane rules. Copy it into `.claude/skills/` (or point your
-agent at it) so the model learns the workflow, not just the schemas.
-
----
-
 ## Architecture
 
 ```
@@ -219,8 +258,6 @@ agent at it) so the model learns the workflow, not just the schemas.
 Full decisions with evidence: `docs/01-architecture.md`. Milestones and proofs:
 `docs/02-build-plan.md`.
 
----
-
 ## Artifacts on disk
 
 ```
@@ -237,6 +274,59 @@ Full decisions with evidence: `docs/01-architecture.md`. Milestones and proofs:
 
 The journal is the cold-attach story: a fresh agent with no context can read
 `sessions/<name>/journal.jsonl` and know exactly what happened.
+
+---
+
+## Sandbox
+
+The same instrument, in an ephemeral Linux container where an agent writes the code and checks it.
+`glassbox doctor` is the first thing to run anywhere new — browser, display mode, egress, and
+state root are all probed, none guessed. `docs/01-architecture.md` §11 is the decision record;
+the short version:
+
+| | local | sandbox |
+| --- | --- | --- |
+| browser | `channel:'chromium'` | resolved by path, `--disable-dev-shm-usage` |
+| default mode | headless | **headed under Xvfb** |
+| egress | open | jailed — measured at daemon start, not assumed |
+| failed external request | a defect | `sandboxBlocked`: one info line, excluded from `ok` |
+| fonts | system | `substituted` (on evidence) or `har-replayed` |
+| human channel | `watch` — live screencast | `export` — one self-contained `.html` |
+| cleanup | `kill-all --mine` protects other agents | single-tenant; `--force` is normal |
+
+`npx playwright install` needs network an agent sandbox's allowlist usually does not permit, and
+playwright pins a browser revision per release — so a container that ships a *different* revision
+fails channel resolution. Glassbox resolves a Chromium by path instead, or finds one under
+`PLAYWRIGHT_BROWSERS_PATH`.
+
+Headed is the sandbox default because it is *more accurate*, not less: headless Chromium reports a
+0px overlay scrollbar and therefore cannot see horizontal overflow or right-edge clipping at all,
+while headed-under-Xvfb reports the same 15px gutter a desktop Chrome does.
+
+Every verify carries a `conditions` block and every finding a `portability` tag — `portable`
+(computed from CSS values, the cascade, the DOM, HTTP status), `font-dependent` (measured off
+rendered text, with a substitute typeface), or `sandbox-artifact`. A finding without its conditions
+is a claim the instrument cannot support.
+
+**The HAR bridge** is what connects the two halves. Record where the network works, replay where it
+does not — one file carries the API responses and the font binaries:
+
+```bash
+# networked machine
+glassbox session open rec --record-har run.har
+glassbox goto http://localhost:5173/ -s rec
+glassbox wait -s rec --sleep 1500
+glassbox session close rec          # playwright writes the HAR on CLOSE
+
+# sandbox
+glassbox session open s --har run.har
+glassbox verify -s s                # conditions: fonts: har-replayed
+glassbox export -s s --out report.html
+```
+
+M13 proves the round trip, including the part that matters most: **the HAR run sees a low-contrast
+defect the jailed run could not see at all**, because the stylesheet carrying it never loaded. The
+bridge restores findings; it does not just remove noise.
 
 ---
 
@@ -307,71 +397,47 @@ never hydrated). The result is still complete — it just wasn't quiet.
 ## Tests
 
 ```bash
-npm test              # all 12 proofs, 262 checks against a real browser (~17 min)
+npm test              # 13 modules, 293 checks, against a real browser (~17 min)
 npm run test:m8       # the system-level pass: parallel stress, seed sweep, artifact contract
 npm run test:m9       # defect round 1 regressions (each check fails on the pre-fix build)
-npm run test:m10      # defect round 2 regressions (deferred content, cold/warm loads, 404 allowlist)
-npm run test:m11      # defect round 3 regressions (collapsed <details>, clipped-capture framing)
-npm run test:m12      # defect round 4 regressions (session ownership, scoped destroy verbs)
-npm run test:live     # OPTIONAL, not in npm test: live check against a real Astro project
+npm run test:m10      # defect round 2 (deferred content, cold/warm loads, 404 allowlist)
+npm run test:m11      # defect round 3 (collapsed <details>, clipped-capture framing)
+npm run test:m12      # defect round 4 (session ownership, scoped destroy verbs)
+npm run test:m13      # the platform seam + sandbox backend + HAR bridge
+
+# OPTIONAL, not in npm test — point it at any project with a `dev` script:
+npm run test:live -- --cwd ../my-astro-site
 ```
 
 Each proof drives the real CLI/daemon against a real Chromium, and every one ends by asserting
-`kill-all` leaves zero orphan processes. `test/bugzoo/` is the seeded-bug site the proofs verify
-against — 17 deliberate bug classes plus a clean page as the false-positive check, plus the pages
-seeded from the three field-defect rounds (occluded-but-clickable control, boot-time theme, Tailwind
-class theme, modal backdrop, invisible drawer, delegated listeners, deferred `content-visibility`
-sections, a request-counting cache page, a collapsed `<details>` accordion, and a UA-pseudo hide
-no computed style can explain).
+`kill-all` leaves zero orphan processes.
 
-## Known limits (v1)
+`test/bugzoo/` is the seeded-bug site the proofs verify against — 17 deliberate bug classes plus a
+clean page as the false-positive check, plus the pages seeded from four rounds of **field defects**
+found by dogfooding Glassbox against real sites: an occluded-but-clickable control, a boot-time
+theme, a Tailwind class theme, a modal backdrop, an invisible drawer, delegated listeners, deferred
+`content-visibility` sections, a request-counting cache page, a collapsed `<details>` accordion, and
+a UA-pseudo hide no computed style can explain.
 
-No cloud/remote browsers, no stealth or CAPTCHA anything, no cross-engine (BiDi) abstraction, no
-performance-trace UI, no scraping ergonomics. React/Vue component-tree inspection is deliberately
-out (version-fragile). macOS/Linux are unproven, not unsupported.
+Those four rounds are written up in `docs/defects-*.md` — every defect the tool got *wrong* in the
+field, its root cause, and the regression test that now pins the fix. That log is the most useful
+thing in this repo if you are evaluating whether to trust it.
 
 ---
 
-## Sandbox
+## Contributing
 
-The same instrument, in an ephemeral Linux container where an agent writes the code and checks it.
-`docs/01-architecture.md` §11 is the decision record; the short version:
+Issues and PRs welcome. The most valuable contributions right now, in order:
 
-| | local | sandbox |
-| --- | --- | --- |
-| browser | `channel:'chromium'` | resolved by path, `--disable-dev-shm-usage` |
-| default mode | headless | **headed under Xvfb** |
-| egress | open | jailed — measured at daemon start, not assumed |
-| failed external request | a defect | `sandboxBlocked`: one info line, excluded from `ok` |
-| fonts | system | `substituted` (on evidence) or `har-replayed` |
-| human channel | `watch` — live screencast | `export` — one self-contained `.html` |
-| cleanup | `kill-all --mine` protects other agents | single-tenant; `--force` is normal |
+1. **Run `npm test` on macOS** and report what happens. See "Status" above.
+2. **New bug-zoo pages** — a real UI defect Glassbox misses, as a minimal HTML repro, is worth
+   more than a feature.
+3. **CI** — wiring the suite into GitHub Actions with a cached Chromium.
 
-Headed is the sandbox default because it is *more accurate*, not less: headless Chromium reports a
-0px overlay scrollbar and therefore cannot see horizontal overflow or right-edge clipping at all,
-while headed-under-Xvfb reports the same 15px gutter a desktop Chrome does.
+`docs/00-first-principles.md` explains why the tool is shaped the way it is; read it before
+proposing an architectural change.
 
-Every verify carries a `conditions` block and every finding a `portability` tag — `portable`
-(computed from CSS values, the cascade, the DOM, HTTP status), `font-dependent` (measured off
-rendered text, with a substitute typeface), or `sandbox-artifact`. A finding without its conditions
-is a claim the instrument cannot support.
+## License
 
-**The HAR bridge** is what connects the two halves. Record where the network works, replay where it
-does not — one file carries the API responses and the font binaries:
-
-```bash
-# networked machine
-glassbox session open rec --record-har run.har
-glassbox goto http://localhost:5173/ -s rec
-glassbox wait -s rec --sleep 1500
-glassbox session close rec          # playwright writes the HAR on CLOSE
-
-# sandbox
-glassbox session open s --har run.har
-glassbox verify -s s                # conditions: fonts: har-replayed
-glassbox export -s s --out report.html
-```
-
-M13 proves the round trip, including the part that matters most: **the HAR run sees a low-contrast
-defect the jailed run could not see at all**, because the stylesheet carrying it never loaded. The
-bridge restores findings; it does not just remove noise.
+MIT — see [LICENSE](LICENSE). Third-party components (vendored axe-core, MPL-2.0; Playwright,
+Apache-2.0) are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

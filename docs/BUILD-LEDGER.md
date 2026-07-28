@@ -21,7 +21,7 @@ project lives here, its own repo (`main`).
       M4 (23/23) → M6 (19/19) → M5 (23/23) → M7 (32/32, dev-loop) → M8 (39/39,
       hardening + full-system). Suite `npm test` = **184/184 green × 2 consecutive runs**,
       zero flakes, zero chromium orphans. Tagged **v0.1.0**.
-- [x] Phase 5 — validated vs live WCII (test/live-wcii.mjs 9/9, not in npm test) AND
+- [x] Phase 5 — validated vs live WCII (test/live-devserver.mjs 9/9, not in npm test) AND
       dogfooded from the orchestrating Claude session against https://wcii.pages.dev/:
       session/goto/verify --themes/observe/style/screenshot/kill-all all correct.
       **Found a real production bug: wcii.pages.dev/favicon.ico → 404** (console error +
@@ -150,7 +150,7 @@ project lives here, its own repo (`main`).
 
 ## Known limitations (v0.1.0 + defect rounds 1-4)
 - display:none (and content-visibility:hidden) treated as deliberate — an accidentally-hidden
-  element won't be flagged; win32-only proven; parallelism tested at 4 sessions; live-wcii check
+  element won't be flagged; win32-only proven; parallelism tested at 4 sessions; live dev-server check
   is manual, not CI-gated.
 - Session ownership is advisory, not authenticated: a client id is a label any caller can set, and
   `--force` still ends everyone's sessions by design. It stops the accident, not an adversary.
@@ -183,7 +183,7 @@ project lives here, its own repo (`main`).
   bare `kill-all`: routine cleanup no longer reaches another agent's daemon.)
 
 ## Decisions log
-- 2026-07-23: Name = Glassbox. Repo at `C:\Users\boomb\Documents\_Projects\glassbox`.
+- 2026-07-23: Name = Glassbox. Its own repo, `main`.
 - 2026-07-23: Rendering engine is a commodity (Chromium via CDP); we build the shell,
   session model, instrumentation, interfaces. Engine-management strategy left open for
   research (Playwright-managed vs raw CDP vs Electron).
@@ -191,5 +191,5 @@ project lives here, its own repo (`main`).
 ## Environment facts
 - Windows 11, Node v24.9.0, npm 11.6.0. Playwright Chromium builds already cached in
   `%LOCALAPPDATA%\ms-playwright` (chromium-1208/1223 + headless shells).
-- Existing tool: `C:\Users\boomb\browser-harness` (Python CDP bridge into user's own
-  Chrome; single-session; its SKILL.md is the anti-spec — see first-principles §4).
+- Prior art on the same machine: a private `browser-harness` (Python CDP bridge into the
+  user's own Chrome; single-session; its SKILL.md is the anti-spec — see first-principles §4).
