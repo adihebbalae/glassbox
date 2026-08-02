@@ -9,8 +9,11 @@
 
 ![Terminal recording: one `glassbox verify` call reports the console, network, layout and accessibility defects on a page, then `style` explains a contrast bug from the cascade and `debug listeners` proves a button is dead](assets/demo.gif)
 
-*Real, unedited terminal output. The page under test is `test/bugzoo/layout.html` — the seeded-bug
-site this repo's proofs verify against.*
+*Real terminal output from one take. The page under test is `test/bugzoo/layout.html` — the
+seeded-bug site this repo's proofs verify against. Recorded with `GLASSBOX_HOME=C:\glassbox-demo`,
+so the artifact paths you see are a neutral state root rather than a home directory. Two values are
+replaced with `<redacted>` and nothing else is touched: the daemon's bearer token and its pid. A
+README hero image is a bad place to print either, even a dead one.*
 
 Your coding agent just edited the checkout page. Now it has to answer, with no human in the
 loop: *does the site actually work and look right?* Today it guesses — or it burns fifteen tool
@@ -493,9 +496,10 @@ now 8 → 8. Pinned by m12 `b3`.
 
 ### It diagnosed itself, unprompted, while being filmed
 
-The demo GIF above is a single unedited take, and it is the second take. During the first,
-unrelated Glassbox activity elsewhere on the machine swept the daemon out from under the recording.
-Every subsequent call would have failed. Instead of a bare `NO_SESSION`, the run printed:
+The GIF above is a re-recording, but the run it replaced was a single unedited take — and that one
+was itself the second take. During the first, unrelated Glassbox activity elsewhere on the machine
+swept the daemon out from under the recording. Every subsequent call would have failed. Instead of
+a bare `NO_SESSION`, the run printed:
 
 ```console
 daemon: pid 37380, up since 10:57:14 — a different pid than your session banner means it restarted
